@@ -9,9 +9,11 @@ from helper_functions import TFHelper
 from occupancy_field import OccupancyField
 
 
-class ParticleFilter(object):
-    """ The class that represents a Particle Filter ROS Node
+class ParticleFilter:
     """
+    The class that represents a Particle Filter ROS Node
+    """
+
     def __init__(self):
         rospy.init_node('pf')
 
@@ -45,7 +47,7 @@ class ParticleFilter(object):
     def run(self):
         r = rospy.Rate(5)
 
-        while not(rospy.is_shutdown()):
+        while not rospy.is_shutdown():
             # in the main loop all we do is continuously broadcast the latest
             # map to odom transform
             self.transform_helper.send_last_map_to_odom_transform()

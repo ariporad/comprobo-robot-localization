@@ -25,6 +25,7 @@ from sklearn.neighbors import NearestNeighbors
 from occupancy_field import OccupancyField
 from helper_functions import TFHelper
 
+
 class Particle(object):
     """ Represents a hypothesis (particle) of the robot's pose consisting of x,y and theta (yaw)
         Attributes:
@@ -34,12 +35,12 @@ class Particle(object):
             w: the particle weight (the class does not ensure that particle weights are normalized
     """
 
-    def __init__(self,x=0.0,y=0.0,theta=0.0,w=1.0):
+    def __init__(self, x=0.0, y=0.0, theta=0.0, w=1.0):
         """ Construct a new Particle
             x: the x-coordinate of the hypothesis relative to the map frame
             y: the y-coordinate of the hypothesis relative ot the map frame
             theta: the yaw of the hypothesis relative to the map frame
-            w: the particle weight (the class does not ensure that particle weights are normalized """ 
+            w: the particle weight (the class does not ensure that particle weights are normalized """
         self.w = w
         self.theta = theta
         self.x = x
@@ -47,10 +48,12 @@ class Particle(object):
 
     def as_pose(self):
         """ A helper function to convert a particle to a geometry_msgs/Pose message """
-        orientation_tuple = tf.transformations.quaternion_from_euler(0,0,self.theta)
-        return Pose(position=Point(x=self.x,y=self.y,z=0), orientation=Quaternion(x=orientation_tuple[0], y=orientation_tuple[1], z=orientation_tuple[2], w=orientation_tuple[3]))
+        orientation_tuple = tf.transformations.quaternion_from_euler(
+            0, 0, self.theta)
+        return Pose(position=Point(x=self.x, y=self.y, z=0), orientation=Quaternion(x=orientation_tuple[0], y=orientation_tuple[1], z=orientation_tuple[2], w=orientation_tuple[3]))
 
     # TODO: define additional helper functions if needed
+
 
 class ParticleFilter:
     """ The class that represents a Particle Filter ROS Node
@@ -74,31 +77,39 @@ class ParticleFilter:
                                    The pose is expressed as a list [x,y,theta] (where theta is the yaw)
             map: the map we will be localizing ourselves in.  The map should be of type nav_msgs/OccupancyGrid
     """
+
     def __init__(self):
-        self.initialized = False        # make sure we don't perform updates before everything is setup
-        rospy.init_node('pf')           # tell roscore that we are creating a new node named "pf"
+        # make sure we don't perform updates before everything is setup
+        self.initialized = False
+        # tell roscore that we are creating a new node named "pf"
+        rospy.init_node('pf')
 
         self.base_frame = "base_link"   # the frame of the robot base
         self.map_frame = "map"          # the name of the map coordinate frame
         self.odom_frame = "odom"        # the name of the odometry coordinate frame
-        self.scan_topic = "scan"        # the topic where we will get laser scans from 
+        self.scan_topic = "scan"        # the topic where we will get laser scans from
 
         self.n_particles = 300          # the number of particles to use
 
-        self.d_thresh = 0.2             # the amount of linear movement before performing an update
-        self.a_thresh = math.pi/6       # the amount of angular movement before performing an update
+        # the amount of linear movement before performing an update
+        self.d_thresh = 0.2
+        # the amount of angular movement before performing an update
+        self.a_thresh = math.pi/6
 
-        self.laser_max_distance = 2.0   # maximum penalty to assess in the likelihood field model
+        # maximum penalty to assess in the likelihood field model
+        self.laser_max_distance = 2.0
 
         # TODO: define additional constants if needed
 
         # Setup pubs and subs
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
-        rospy.Subscriber("initialpose", PoseWithCovarianceStamped, self.update_initial_pose)
+        rospy.Subscriber("initialpose", PoseWithCovarianceStamped,
+                         self.update_initial_pose)
 
         # publish the current particle cloud.  This enables viewing particles in rviz.
-        self.particle_pub = rospy.Publisher("particlecloud", PoseArray, queue_size=10)
+        self.particle_pub = rospy.Publisher(
+            "particlecloud", PoseArray, queue_size=10)
 
         # laser_subscriber listens for data from the lidar
         rospy.Subscriber(self.scan_topic, LaserScan, self.scan_received)
@@ -114,7 +125,8 @@ class ParticleFilter:
         self.last_projected_stable_scan = None
         if self.use_projected_stable_scan:
             # subscriber to the odom point cloud
-            rospy.Subscriber("projected_stable_scan", PointCloud, self.projected_scan_received)
+            rospy.Subscriber("projected_stable_scan",
+                             PointCloud, self.projected_scan_received)
 
         self.current_odom_xy_theta = []
         self.occupancy_field = OccupancyField()
@@ -134,7 +146,8 @@ class ParticleFilter:
         # just to get started we will fix the robot's pose to always be at the origin
         self.robot_pose = Pose()
 
-        self.transform_helper.fix_map_to_odom_transform(self.robot_pose, timestamp)
+        self.transform_helper.fix_map_to_odom_transform(
+            self.robot_pose, timestamp)
 
     def projected_scan_received(self, msg):
         self.last_projected_stable_scan = msg
@@ -147,7 +160,8 @@ class ParticleFilter:
 
             msg: this is not really needed to implement this, but is here just in case.
         """
-        new_odom_xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(self.odom_pose.pose)
+        new_odom_xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(
+            self.odom_pose.pose)
         # compute the change in x,y,theta since our last update
         if self.current_odom_xy_theta:
             old_odom_xy_theta = self.current_odom_xy_theta
@@ -162,7 +176,7 @@ class ParticleFilter:
 
         # TODO: modify particles using delta
 
-    def map_calc_range(self,x,y,theta):
+    def map_calc_range(self, x, y, theta):
         """ Difficulty Level 3: implement a ray tracing likelihood model... Let me know if you are interested """
         # TODO: nothing unless you want to try this alternate likelihood model
         pass
@@ -201,7 +215,8 @@ class ParticleFilter:
     def update_initial_pose(self, msg):
         """ Callback function to handle re-initializing the particle filter based on a pose estimate.
             These pose estimates could be generated by another ROS Node or could come from the rviz GUI """
-        xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(msg.pose.pose)
+        xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(
+            msg.pose.pose)
         self.initialize_particle_cloud(msg.header.stamp, xy_theta)
 
     def initialize_particle_cloud(self, timestamp, xy_theta=None):
@@ -210,7 +225,8 @@ class ParticleFilter:
             xy_theta: a triple consisting of the mean x, y, and theta (yaw) to initialize the
                       particle cloud around.  If this input is omitted, the odometry will be used """
         if xy_theta is None:
-            xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(self.odom_pose.pose)
+            xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(
+                self.odom_pose.pose)
         self.particle_cloud = []
         # TODO create particles
 
@@ -247,7 +263,8 @@ class ParticleFilter:
         # wait a little while to see if the transform becomes available.  This fixes a race
         # condition where the scan would arrive a little bit before the odom to base_link transform
         # was updated.
-        self.tf_listener.waitForTransform(self.base_frame, self.odom_frame, msg.header.stamp, rospy.Duration(0.5))
+        self.tf_listener.waitForTransform(
+            self.base_frame, self.odom_frame, msg.header.stamp, rospy.Duration(0.5))
         if not(self.tf_listener.canTransform(self.base_frame, self.odom_frame, msg.header.stamp)):
             # need to know how to transform between base and odometric frames
             # this will eventually be published by either Gazebo or neato_node
@@ -264,7 +281,8 @@ class ParticleFilter:
                         pose=Pose())
         self.odom_pose = self.tf_listener.transformPose(self.odom_frame, p)
         # store the the odometry pose in a more convenient format (x,y,theta)
-        new_odom_xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(self.odom_pose.pose)
+        new_odom_xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(
+            self.odom_pose.pose)
         if not self.current_odom_xy_theta:
             self.current_odom_xy_theta = new_odom_xy_theta
             return
@@ -278,15 +296,21 @@ class ParticleFilter:
             # we have moved far enough to do an update!
             self.update_particles_with_odom(msg)    # update based on odometry
             if self.last_projected_stable_scan:
-                last_projected_scan_timeshift = deepcopy(self.last_projected_stable_scan)
+                last_projected_scan_timeshift = deepcopy(
+                    self.last_projected_stable_scan)
                 last_projected_scan_timeshift.header.stamp = msg.header.stamp
-                self.scan_in_base_link = self.tf_listener.transformPointCloud("base_link", last_projected_scan_timeshift)
+                self.scan_in_base_link = self.tf_listener.transformPointCloud(
+                    "base_link", last_projected_scan_timeshift)
 
-            self.update_particles_with_laser(msg)   # update based on laser scan
-            self.update_robot_pose(msg.header.stamp)                # update robot's pose
-            self.resample_particles()               # resample particles to focus on areas of high density
+            self.update_particles_with_laser(
+                msg)   # update based on laser scan
+            # update robot's pose
+            self.update_robot_pose(msg.header.stamp)
+            # resample particles to focus on areas of high density
+            self.resample_particles()
         # publish particles (so things like rviz can see them)
         self.publish_particles(msg)
+
 
 if __name__ == '__main__':
     n = ParticleFilter()
