@@ -41,6 +41,9 @@ Setup:
 
 Repeat:
 2. Update each particle with the motion model (odometry)
+    - Figure out where odom is now (convert (0,0,0):base_link -> odom)
+    - Compare that with last cycle to get delta_odom
+    - For each particle, update x/y/theta by a random sample of delta_odom 
 3. Compute weights: likelyhood that we would have gotten the laser data if we were at each particle
     - Use the occupancy field for this
     - Normalize weights to 1
@@ -120,7 +123,7 @@ class ParticleFilter:
         ]
 
     def set_particles(self, stamp: rospy.Time, particles: List[Particle]):
-        self.particles = particles
+        self.particles = self.normalize_weights(particles)
 
         # Calculate robot pose / map frame
         robot_pose = self.transform_helper.convert_xy_and_theta_to_pose(np.mean([  # TODO: should this be median?
@@ -139,6 +142,13 @@ class ParticleFilter:
             for particle in self.particles
         ]
         self.particle_pub.publish(poses)
+
+    def normalize_weights(self, particles: List[Particle]):
+        total = sum(p.weight for p in particles)
+        return [
+            Particle(p.x, p.y, p.theta, p.weight / total)
+            for p in particles
+        ]
 
     def run(self):
         r = rospy.Rate(5)
