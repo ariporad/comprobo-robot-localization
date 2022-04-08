@@ -8,6 +8,33 @@ from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, Pose
 from helper_functions import TFHelper
 from occupancy_field import OccupancyField
 
+"""
+# The Plan
+
+We need:
+- Initial State Model: P(x0)
+    - initialpose topic + uncertainty
+- Motion Model (odometry): P(Xt | X(t-1), Ut)
+    - This needs to be odometry + uncertainty
+- Sensor Model: P(Zt | xt)
+    - Based on occupancy model + flat noise uncertainty + normal distribution
+
+Setup:
+1. Create initial particles:
+    - Weighted random sample from p(x0)
+       - How to do 2d weighted random sample properly?
+       - We're going to do this wrong to start, by doing X and Y seperately 
+
+Repeat:
+2. Update each particle with the motion model (odometry)
+3. Compute weights: likelyhood that we would have gotten the laser data if we were at each particle
+    - Use the occupancy field for this
+    - Normalize weights to 1
+4. Resample particles, using weights as the distribution
+5. Goto Step 2
+
+"""
+
 
 class ParticleFilter:
     """
