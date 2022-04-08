@@ -4,8 +4,10 @@
 
 from collections import namedtuple
 from math import pi
+from secrets import choice
 from typing import Iterable, Optional, Tuple, List
 import rospy
+import random
 from std_msgs.msg import Header
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, PoseStamped
 import tf2_ros
@@ -91,31 +93,34 @@ class ParticleFilter:
         x, y, theta = \
             self.transform_helper.convert_pose_to_xy_and_theta(msg.pose.pose)
 
-        particles = list(self.sample_particles(
-            (x, y, theta),
-            self.INITIAL_STATE_SIGMA, self.INITIAL_STATE_NOISE, self.NUM_PARTICLES))
+        particles = self.sample_particles(
+            [Particle(x, y, theta, 1)],
+            self.INITIAL_STATE_SIGMA, self.INITIAL_STATE_NOISE, self.NUM_PARTICLES)
 
         # For some reason, passing through the time prevents anything from working
         self.set_particles(rospy.Time.now(), particles)
 
         # Use the helper functions to fix the transform
 
-    def sample_particles(self, pose: Tuple[float, float, float], sigma: float, noise: float, num: int) -> Iterable[Particle]:
-        x, y, theta = pose
+    def sample_particles(self, particles: List[Particle], sigma: float, noise: float, k: int) -> List[Particle]:
+        choices = random.choices(
+            particles,
+            weights=[p.weight for p in particles],
+            k=k
+        )
 
-        for _ in range(num):
-            if rng.random() < noise:
-                pass  # noise isn't implemented yet
-
-            yield Particle(
-                x=rng.normal(x, sigma),
-                y=rng.normal(y, sigma),
-                theta=rng.normal(theta, sigma),
+        return [
+            Particle(
+                x=rng.normal(choice.x, sigma),
+                y=rng.normal(choice.y, sigma),
+                theta=rng.normal(choice.theta, sigma),
                 weight=1
             )
+            for choice in choices
+        ]
 
-    def set_particles(self, stamp: rospy.Time, particles: Iterable[Particle]):
-        self.particles = list(particles)
+    def set_particles(self, stamp: rospy.Time, particles: List[Particle]):
+        self.particles = particles
 
         # Calculate robot pose / map frame
         robot_pose = self.transform_helper.convert_xy_and_theta_to_pose(np.mean([  # TODO: should this be median?
