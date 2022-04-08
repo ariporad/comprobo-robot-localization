@@ -2,11 +2,23 @@
 
 """ This is the starter code for the robot localization project """
 
+from collections import namedtuple
+from math import pi
+from typing import Iterable, Optional, Tuple, List
 import rospy
-from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, Pose
+from std_msgs.msg import Header
+from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, PoseStamped
+import tf2_ros
+import tf2_geometry_msgs
+
+import numpy as np
+from numpy.random import default_rng, Generator
 
 from helper_functions import TFHelper
 from occupancy_field import OccupancyField
+
+Particle = namedtuple('Particle', ['x', 'y', 'theta', 'weight'])
+rng: Generator = default_rng()
 
 """
 # The Plan
@@ -33,6 +45,9 @@ Repeat:
 4. Resample particles, using weights as the distribution
 5. Goto Step 2
 
+Notes:
+- Convention for normal distributions: sigma is stddev, noise the proportion of time to pick a random value
+
 """
 
 
@@ -41,8 +56,22 @@ class ParticleFilter:
     The class that represents a Particle Filter ROS Node
     """
 
+    INITIAL_STATE_SIGMA = 0.5
+    INITIAL_STATE_NOISE = 0.25
+
+    NUM_PARTICLES = 100
+
+    particles: Optional[List[Particle]] = None
+    robot_pose: Optional[PoseStamped] = None
+
     def __init__(self):
         rospy.init_node('pf')
+
+        # create instances of two helper objects that are provided to you
+        # as part of the project
+        # self.occupancy_field = OccupancyField()  # NOTE: hangs if a map isn't published
+        self.transform_helper = TFHelper()
+        self.tf_buf = tf2_ros.Buffer()
 
         # pose_listener responds to selection of a new approximate robot
         # location (for instance using rviz)
@@ -55,21 +84,56 @@ class ParticleFilter:
                                             PoseArray,
                                             queue_size=10)
 
-        # create instances of two helper objects that are provided to you
-        # as part of the project
-        self.occupancy_field = OccupancyField()
-        self.transform_helper = TFHelper()
-
-    def update_initial_pose(self, msg):
+    def update_initial_pose(self, msg: PoseWithCovarianceStamped):
         """ Callback function to handle re-initializing the particle filter
             based on a pose estimate.  These pose estimates could be generated
             by another ROS Node or could come from the rviz GUI """
-        xy_theta = \
+        x, y, theta = \
             self.transform_helper.convert_pose_to_xy_and_theta(msg.pose.pose)
 
-        # initialize your particle filter based on the xy_theta tuple
+        particles = list(self.sample_particles(
+            (x, y, theta),
+            self.INITIAL_STATE_SIGMA, self.INITIAL_STATE_NOISE, self.NUM_PARTICLES))
+
+        # For some reason, passing through the time prevents anything from working
+        self.set_particles(rospy.Time.now(), particles)
 
         # Use the helper functions to fix the transform
+
+    def sample_particles(self, pose: Tuple[float, float, float], sigma: float, noise: float, num: int) -> Iterable[Particle]:
+        x, y, theta = pose
+
+        for _ in range(num):
+            if rng.random() < noise:
+                pass  # noise isn't implemented yet
+
+            yield Particle(
+                x=rng.normal(x, sigma),
+                y=rng.normal(y, sigma),
+                theta=rng.normal(theta, sigma),
+                weight=1
+            )
+
+    def set_particles(self, stamp: rospy.Time, particles: Iterable[Particle]):
+        self.particles = list(particles)
+
+        # Calculate robot pose / map frame
+        robot_pose = self.transform_helper.convert_xy_and_theta_to_pose(np.mean([  # TODO: should this be median?
+            (particle.x, particle.y, particle.theta)
+            for particle in self.particles
+        ], axis=0))
+        self.transform_helper.fix_map_to_odom_transform(stamp, robot_pose)
+
+        # Publish particles
+        poses = PoseArray()
+        poses.header.stamp = stamp
+        poses.header.frame_id = 'map'
+        poses.poses = [
+            self.transform_helper.convert_xy_and_theta_to_pose(
+                (particle.x, particle.y, particle.theta))
+            for particle in self.particles
+        ]
+        self.particle_pub.publish(poses)
 
     def run(self):
         r = rospy.Rate(5)

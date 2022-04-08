@@ -22,6 +22,11 @@ class TFHelper(object):
         self.tf_listener = TransformListener()
         self.tf_broadcaster = TransformBroadcaster()
 
+    def convert_xy_and_theta_to_pose(self, xytheta):
+        """ Convert a (x, y, theta) tuple to a geometry_msgs/Pose message. """
+        x, y, theta = xytheta
+        return self.convert_translation_rotation_to_pose((x, y, 0), t.quaternion_from_euler(0, 0, theta))
+
     def convert_translation_rotation_to_pose(self, translation, rotation):
         """ Convert from representation of a pose as translation and rotation
             (Quaternion) tuples to a geometry_msgs/Pose message """
@@ -81,24 +86,24 @@ class TFHelper(object):
         else:
             return d2
 
-    def fix_map_to_odom_transform(self, robot_pose, timestamp):
+    def fix_map_to_odom_transform(self, stamp, robot_pose):
         """ This method constantly updates the offset of the map and
             odometry coordinate systems based on the latest results from
             the localizer.
 
-            robot_pose should be of type geometry_msgs/Pose and timestamp is of
-            type rospy.Time and represents the time at which the robot's pose
-            corresponds.
+            robot_pose should be of type geometry_msgs/Pose in the base_link frame, 
+            and timestamp is of type rospy.Time and represents the time at which the
+            robot's pose corresponds.
             """
         (translation, rotation) = \
             self.convert_pose_inverse_transform(robot_pose)
         p = PoseStamped(
             pose=self.convert_translation_rotation_to_pose(translation,
                                                            rotation),
-            header=Header(stamp=timestamp, frame_id='base_link'))
+            header=Header(stamp=stamp, frame_id='base_link'))
         self.tf_listener.waitForTransform('base_link',
                                           'odom',
-                                          timestamp,
+                                          stamp,
                                           rospy.Duration(1.0))
         self.odom_to_map = self.tf_listener.transformPose('odom', p)
         (self.translation, self.rotation) = \
