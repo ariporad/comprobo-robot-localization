@@ -10,7 +10,31 @@ import tf.transformations as t
 from tf import TransformListener
 from tf import TransformBroadcaster
 
+import numpy as np
+from numpy.random import default_rng, Generator
+
 import math
+
+rng = default_rng()
+
+
+def signum(a: float) -> float:
+    if a > 0.0:
+        return 1.0
+    elif a < 0.0:
+        return -1.0
+    else:
+        return 0.0
+
+
+def sample_normal_error(value: float, sigma: float):
+    """
+    Helper: Equivalent to normal(value, value * sigma), but properly handles negatives.
+    """
+
+    sign = signum(value)
+    value_abs = abs(value)
+    return (sign * rng.normal(value_abs, value_abs * sigma))
 
 
 class TFHelper(object):
