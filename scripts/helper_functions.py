@@ -125,10 +125,11 @@ class TFHelper(object):
             pose=self.convert_translation_rotation_to_pose(translation,
                                                            rotation),
             header=Header(stamp=stamp, frame_id='base_link'))
-        self.tf_listener.waitForTransform('base_link',
-                                          'odom',
-                                          stamp,
-                                          rospy.Duration(1.0))
+        # self.tf_listener.waitForTransform('base_link',
+        #                                   'odom',
+        #                                   rospy.Time(0),  # XXX: stamp?
+        #                                   rospy.Duration(1.0))
+        # self.odom_to_map = self.tf_listener.transformPose('odom', p)
         self.odom_to_map = self.tf_listener.transformPose('odom', p)
         (self.translation, self.rotation) = \
             self.convert_pose_inverse_transform(self.odom_to_map.pose)

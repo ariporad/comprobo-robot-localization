@@ -11,6 +11,7 @@ import rospy
 import random
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Header
+from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, PoseStamped
 import tf2_ros
 import tf2_geometry_msgs
@@ -74,6 +75,7 @@ class ParticleFilter:
     robot_pose: PoseStamped = None
 
     last_odom: PoseTuple = None
+    last_lidar: Optional[LaserScan] = None
 
     def __init__(self):
         rospy.init_node('pf')
@@ -81,7 +83,7 @@ class ParticleFilter:
 
         # create instances of two helper objects that are provided to you
         # as part of the project
-        # self.occupancy_field = OccupancyField()  # NOTE: hangs if a map isn't published
+        self.occupancy_field = OccupancyField()  # NOTE: hangs if a map isn't published
         self.transform_helper = TFHelper()
         self.tf_buf = tf2_ros.Buffer()
 
@@ -92,6 +94,7 @@ class ParticleFilter:
                          self.update_initial_pose)
 
         rospy.Subscriber("odom", Odometry, self.update)
+        rospy.Subscriber("stable_scan", LaserScan, self.on_lidar)
 
         # publisher for the particle cloud for visualizing in rviz.
         self.particle_pub = rospy.Publisher("particlecloud",
@@ -134,8 +137,26 @@ class ParticleFilter:
             self.transform_helper.angle_diff(odom[2], last_odom[2])
         )
         particles = self.apply_motion(particles, delta_pose, 0.05)
+        particles = [
+            Particle(p.x, p.y, p.theta, self.calculate_sensor_weight(p))
+            for p in particles
+        ]
 
         self.set_particles(now, particles)
+
+    def calculate_sensor_weight(self, particle: Particle) -> float:
+        if self.last_lidar is None:
+            print("No LIDAR data!")
+            return 1.0
+
+        closest_actual = min(r for r in self.last_lidar.ranges if r > 0)
+        closest_expected = self.occupancy_field.get_closest_obstacle_distance(
+            particle.x, particle.y)
+
+        if math.isnan(closest_expected):
+            return 0.0
+
+        return (1.0 / (closest_actual - closest_expected)) ** 3
 
     def apply_motion(self, particles: List[Particle], delta_pose: PoseTuple, sigma: float) -> List[Particle]:
         return [
@@ -194,6 +215,9 @@ class ParticleFilter:
             Particle(p.x, p.y, p.theta, p.weight / total)
             for p in particles
         ]
+
+    def on_lidar(self, msg: LaserScan):
+        self.last_lidar = msg
 
     def run(self):
         r = rospy.Rate(5)
