@@ -10,6 +10,7 @@ from typing import Iterable, Optional, Tuple, List
 import rospy
 import random
 from nav_msgs.msg import Odometry
+from nav_msgs.srv import GetMap
 from std_msgs.msg import Header
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, PoseStamped
@@ -19,11 +20,12 @@ import tf2_geometry_msgs
 import numpy as np
 from numpy.random import default_rng, Generator
 
-from helper_functions import TFHelper, sample_normal_error
+from helper_functions import TFHelper, print_time, sample_normal_error
 from occupancy_field import OccupancyField
 
-PoseTuple = namedtuple('PoseTuple', ['x', 'y', 'theta'])
+# NB: All particles are in the `map` frame
 Particle = namedtuple('Particle', ['x', 'y', 'theta', 'weight'])
+PoseTuple = namedtuple('PoseTuple', ['x', 'y', 'theta'])
 rng: Generator = default_rng()
 
 
@@ -66,8 +68,11 @@ class ParticleFilter:
     The class that represents a Particle Filter ROS Node
     """
 
-    INITIAL_STATE_SIGMA = 0.5
-    INITIAL_STATE_NOISE = 0.25
+    INITIAL_STATE_XY_SIGMA = 0.15
+    INITIAL_STATE_XY_NOISE = 0.15
+
+    INITIAL_STATE_THETA_SIGMA = .75
+    INITIAL_STATE_THETA_NOISE = 0.15
 
     NUM_PARTICLES = 100
 
@@ -76,6 +81,8 @@ class ParticleFilter:
 
     last_odom: PoseTuple = None
     last_lidar: Optional[LaserScan] = None
+
+    map_obstacles: np.array
 
     def __init__(self):
         rospy.init_node('pf')
@@ -101,6 +108,8 @@ class ParticleFilter:
                                             PoseArray,
                                             queue_size=10)
 
+        self.preprocess_map()
+
     def update_initial_pose(self, msg: PoseWithCovarianceStamped):
         """ Callback function to handle re-initializing the particle filter
             based on a pose estimate.  These pose estimates could be generated
@@ -110,7 +119,7 @@ class ParticleFilter:
 
         particles = self.sample_particles(
             [Particle(x, y, theta, 1)],
-            self.INITIAL_STATE_SIGMA, self.INITIAL_STATE_NOISE, self.NUM_PARTICLES)
+            self.INITIAL_STATE_XY_SIGMA, self.INITIAL_STATE_XY_NOISE, self.INITIAL_STATE_THETA_SIGMA, self.INITIAL_STATE_THETA_NOISE, self.NUM_PARTICLES)
 
         self.set_particles(rospy.Time.now(), particles)
 
@@ -118,45 +127,126 @@ class ParticleFilter:
         last_odom = self.last_odom
         odom = self.transform_helper.convert_pose_to_xy_and_theta(
             msg.pose.pose)
-        self.last_odom = odom
 
         if last_odom is None or self.particles is None:
+            self.last_odom = odom
             return
+
+        delta_pose = PoseTuple(
+            odom[0] - last_odom[0],
+            odom[1] - last_odom[1],
+            self.transform_helper.angle_diff(odom[2], last_odom[2])
+        )
+
+        # Make sure we've moved at least a bit
+        if math.sqrt((delta_pose[0] ** 2) + (delta_pose[1] ** 2)) < 0.05 and delta_pose[2] < 0.1:
+            return
+        self.last_odom = odom
 
         now = rospy.Time.now()
 
         # Resample Particles
         particles = self.sample_particles(
             self.particles,
-            self.INITIAL_STATE_SIGMA, self.INITIAL_STATE_NOISE, self.NUM_PARTICLES)
+            self.INITIAL_STATE_XY_SIGMA, self.INITIAL_STATE_XY_NOISE, self.INITIAL_STATE_THETA_SIGMA, self.INITIAL_STATE_THETA_NOISE, self.NUM_PARTICLES)
 
         # Apply Motion
-        delta_pose = PoseTuple(
-            odom[0] - last_odom[0],
-            odom[1] - last_odom[1],
-            self.transform_helper.angle_diff(odom[2], last_odom[2])
-        )
         particles = self.apply_motion(particles, delta_pose, 0.05)
+
         particles = [
             Particle(p.x, p.y, p.theta, self.calculate_sensor_weight(p))
             for p in particles
         ]
 
+        particles = self.normalize_weights(particles)
+
+        print("Particle weights:", sorted([p.weight for p in particles]))
+
         self.set_particles(now, particles)
 
     def calculate_sensor_weight(self, particle: Particle) -> float:
+        # I think this is broken
+        # Try debugging by visualizing markers with weight
         if self.last_lidar is None:
-            print("No LIDAR data!")
             return 1.0
 
-        closest_actual = min(r for r in self.last_lidar.ranges if r > 0)
-        closest_expected = self.occupancy_field.get_closest_obstacle_distance(
-            particle.x, particle.y)
+        actual_lidar = np.array(self.last_lidar.ranges[:-1])
 
-        if math.isnan(closest_expected):
-            return 0.0
+        # Take map data as cartesian coords
+        # Shift to center at particle
+        # NB: Both the map and all particles are in the `map` frame
+        obstacles_shifted = self.map_obstacles - [particle.x, particle.y]
 
-        return (1.0 / (closest_actual - closest_expected)) ** 3
+        # Convert to polar, and descritize to whole angle increments [0-359]
+        rho = np.sqrt(
+            (obstacles_shifted[:, 0] ** 2) + (obstacles_shifted[:, 1] ** 2)
+        )
+        phi_rad = np.arctan2(obstacles_shifted[:, 1], obstacles_shifted[:, 0])
+
+        # Rotate by the particle's heading
+        phi_rad += particle.theta
+
+        # Now convert to degrees
+        # This is the only place we use degrees, but it's helpful since LIDAR is indexed by degree
+        phi = (np.rad2deg(phi_rad).round() + 180) % 360
+
+        # Take the minimum at each angle
+        # Indexed like lidar data, where each index is the degree
+        expected_lidar = np.zeros(360)
+
+        for phi, rho in zip(phi, rho):
+            # phi is already an integer, just make the type right
+            idx = int(phi)
+
+            # Don't care if we don't have any LIDAR data
+            if actual_lidar[idx] == 0.0:
+                continue
+
+            if expected_lidar[idx] == 0.0 or rho < expected_lidar[idx]:
+                expected_lidar[idx] = rho
+
+        # print("Calculated Map Polar Data:", expected_lidar)
+
+        # Compare to LIDAR data (don't forget to drop the extra point #360)
+        mask = actual_lidar > 0.0
+        diff_lidar = np.abs(actual_lidar - expected_lidar)[mask]
+        total_diff = np.sum(diff_lidar)
+
+        weight = np.sum((diff_lidar / 10) ** 3)
+
+        # _debug = np.zeros((360, 3))
+
+        # _debug[:, 0] = expected_lidar
+        # _debug[:, 1] = actual_lidar
+        # _debug[:, 2] = diff_lidar
+
+        # print(_debug)
+
+        return weight
+
+    def preprocess_map(self):
+        rospy.wait_for_service("static_map")
+        static_map = rospy.ServiceProxy("static_map", GetMap)
+        map = static_map().map
+
+        if map.info.origin.orientation.w != 1.0:
+            print("WARNING: Unsupported map with rotated origin.")
+
+        # The coordinates of each occupied grid cell in the map
+        total_occupied = np.sum(np.array(map.data) > 0)
+        occupied = np.zeros((total_occupied, 2))
+        curr = 0
+        for x in range(map.info.width):
+            for y in range(map.info.height):
+                # occupancy grids are stored in row major order
+                ind = x + y*map.info.width
+                if map.data[ind] > 0:
+                    occupied[curr, 0] = (float(x) * map.info.resolution) \
+                        + map.info.origin.position.x
+                    occupied[curr, 1] = (float(y) * map.info.resolution) \
+                        + map.info.origin.position.y
+                    curr += 1
+        self.map_obstacles = occupied
 
     def apply_motion(self, particles: List[Particle], delta_pose: PoseTuple, sigma: float) -> List[Particle]:
         return [
@@ -169,18 +259,18 @@ class ParticleFilter:
             for p in particles
         ]
 
-    def sample_particles(self, particles: List[Particle], sigma: float, noise: float, k: int) -> List[Particle]:
+    def sample_particles(self, particles: List[Particle], xy_sigma: float, xy_noise: float, theta_sigma: float, theta_noise: float, k: int) -> List[Particle]:
         choices = random.choices(
             particles,
-            weights=[p.weight for p in particles],
+            weights=[p.weight * 1000 for p in particles],
             k=k
         )
 
         return [
             Particle(
-                x=rng.normal(choice.x, sigma),
-                y=rng.normal(choice.y, sigma),
-                theta=rng.normal(choice.theta, sigma),
+                x=rng.normal(choice.x, xy_sigma),
+                y=rng.normal(choice.y, xy_sigma),
+                theta=rng.normal(choice.theta, theta_sigma),
                 weight=1
             )
             for choice in choices
@@ -190,13 +280,19 @@ class ParticleFilter:
         self.last_update = stamp
         self.particles = self.normalize_weights(particles)
 
-        if self.tf_buf.can_transform('base_link', 'odom', stamp, rospy.Duration(1)) or True:
-            # Calculate robot pose / map frame
-            robot_pose = self.transform_helper.convert_xy_and_theta_to_pose(np.mean([  # TODO: should this be median?
-                (particle.x, particle.y, particle.theta)
-                for particle in self.particles
-            ], axis=0))
-            self.transform_helper.fix_map_to_odom_transform(stamp, robot_pose)
+        # if self.tf_buf.can_transform('base_link', 'odom', stamp, rospy.Duration(1)) or True:
+        # Calculate robot pose / map frame
+        # NB: Particles are always in the map reference frame
+        robot_pose = self.transform_helper.convert_xy_and_theta_to_pose(np.average([  # TODO: should this be median?
+            (particle.x, particle.y, particle.theta)
+            for particle in self.particles
+        ], axis=0, weights=[p.weight for p in particles]))
+        # robot_pose is where the robot is in map
+        # By definition, that's also (0, 0, 0) in base_link
+        # So the inverse of robot_pose is the transformation between base_link and map
+        # Subtract whatever the tranformation from base_link to odom is, and you get odom->map
+
+        self.transform_helper.fix_map_to_odom_transform(stamp, robot_pose)
 
         # Publish particles
         poses = PoseArray()
@@ -206,6 +302,7 @@ class ParticleFilter:
             self.transform_helper.convert_xy_and_theta_to_pose(
                 (particle.x, particle.y, particle.theta))
             for particle in self.particles
+            # if particle.weight >= 0.0001
         ]
         self.particle_pub.publish(poses)
 

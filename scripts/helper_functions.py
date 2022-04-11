@@ -1,6 +1,7 @@
 """ Some convenience functions for translating between various representations
     of a robot pose. """
 
+from time import perf_counter
 import rospy
 
 from std_msgs.msg import Header
@@ -14,8 +15,17 @@ import numpy as np
 from numpy.random import default_rng, Generator
 
 import math
+from contextlib import contextmanager
 
 rng = default_rng()
+
+
+@contextmanager
+def print_time(name: str = "Timer"):
+    start = perf_counter()
+    yield
+    duration = perf_counter() - start
+    print(f"Timer '{name}' took {duration:.2f}s   ")
 
 
 def signum(a: float) -> float:
@@ -119,20 +129,29 @@ class TFHelper(object):
             and timestamp is of type rospy.Time and represents the time at which the
             robot's pose corresponds.
             """
-        (translation, rotation) = \
+        (translation_bl2map, rotation_bl2map) = \
             self.convert_pose_inverse_transform(robot_pose)
-        p = PoseStamped(
-            pose=self.convert_translation_rotation_to_pose(translation,
-                                                           rotation),
+        pose_map_in_bl = PoseStamped(
+            pose=self.convert_translation_rotation_to_pose(translation_bl2map,
+                                                           rotation_bl2map),
             header=Header(stamp=stamp, frame_id='base_link'))
         # self.tf_listener.waitForTransform('base_link',
         #                                   'odom',
         #                                   rospy.Time(0),  # XXX: stamp?
         #                                   rospy.Duration(1.0))
         # self.odom_to_map = self.tf_listener.transformPose('odom', p)
-        self.odom_to_map = self.tf_listener.transformPose('odom', p)
+        self.odom_to_map = self.tf_listener.transformPose(
+            'odom', pose_map_in_bl)
         (self.translation, self.rotation) = \
             self.convert_pose_inverse_transform(self.odom_to_map.pose)
+
+        # self.translation = [
+        #     self.translation[0],
+        #     self.translation[1] * -1,
+        #     self.translation[2],
+        # ]
+
+        print("updated map ref frame:", self.translation, self.rotation)
 
     def send_last_map_to_odom_transform(self):
         if not(hasattr(self, 'translation') and hasattr(self, 'rotation')):
