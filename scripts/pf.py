@@ -16,6 +16,7 @@ from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, PoseStamped
 import tf2_ros
 import tf2_geometry_msgs
+from tf.transformations import euler_from_quaternion
 
 import numpy as np
 from numpy.random import default_rng, Generator
@@ -71,8 +72,8 @@ class ParticleFilter:
     INITIAL_STATE_XY_SIGMA = 0.15
     INITIAL_STATE_XY_NOISE = 0.15
 
-    INITIAL_STATE_THETA_SIGMA = .75
-    INITIAL_STATE_THETA_NOISE = 0.15
+    INITIAL_STATE_THETA_SIGMA = math.pi / 10
+    INITIAL_STATE_THETA_NOISE = 0.05
 
     NUM_PARTICLES = 100
 
@@ -125,17 +126,19 @@ class ParticleFilter:
 
     def update(self, msg: Odometry):
         last_odom = self.last_odom
-        odom = self.transform_helper.convert_pose_to_xy_and_theta(
+        translation, orientation_q = self.transform_helper.convert_pose_inverse_transform(
             msg.pose.pose)
+        orientation = euler_from_quaternion(orientation_q)[2]
+        odom = (translation[0], translation[1], orientation)
 
         if last_odom is None or self.particles is None:
             self.last_odom = odom
             return
 
         delta_pose = PoseTuple(
-            odom[0] - last_odom[0],
-            odom[1] - last_odom[1],
-            self.transform_helper.angle_diff(odom[2], last_odom[2])
+            last_odom[0] - odom[0],
+            last_odom[1] - odom[1],
+            self.transform_helper.angle_diff(last_odom[2], odom[2])
         )
 
         # Make sure we've moved at least a bit
@@ -188,7 +191,8 @@ class ParticleFilter:
 
         # Now convert to degrees
         # This is the only place we use degrees, but it's helpful since LIDAR is indexed by degree
-        phi = (np.rad2deg(phi_rad).round() + 180) % 360
+        # arctan2(sin(), cos()) normalizes to [-pi, pi]
+        phi = np.rad2deg(np.arctan2(np.sin(phi_rad), np.cos(phi_rad))).round()
 
         # Take the minimum at each angle
         # Indexed like lidar data, where each index is the degree
@@ -212,7 +216,7 @@ class ParticleFilter:
         diff_lidar = np.abs(actual_lidar - expected_lidar)[mask]
         total_diff = np.sum(diff_lidar)
 
-        weight = np.sum((diff_lidar / 10) ** 3)
+        weight = np.sum((diff_lidar / 10) ** 10)
 
         # _debug = np.zeros((360, 3))
 
