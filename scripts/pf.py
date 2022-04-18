@@ -80,10 +80,11 @@ class ParticleFilter:
     particles: List[Particle] = None
     robot_pose: PoseStamped = None
 
-    last_odom: PoseTuple = None
+    last_pose: PoseTuple = None
     last_lidar: Optional[LaserScan] = None
 
     map_obstacles: np.array
+    tf_listener: tf2_ros.TransformListener
 
     def __init__(self):
         rospy.init_node('pf')
@@ -94,6 +95,7 @@ class ParticleFilter:
         self.occupancy_field = OccupancyField()  # NOTE: hangs if a map isn't published
         self.transform_helper = TFHelper()
         self.tf_buf = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buf)
 
         # pose_listener responds to selection of a new approximate robot
         # location (for instance using rviz)
@@ -125,33 +127,56 @@ class ParticleFilter:
         self.set_particles(rospy.Time.now(), particles)
 
     def update(self, msg: Odometry):
-        last_odom = self.last_odom
-        translation, orientation_q = self.transform_helper.convert_pose_inverse_transform(
-            msg.pose.pose)
-        orientation = euler_from_quaternion(orientation_q)[2]
-        odom = (translation[0], translation[1], orientation)
+        # last_odom = self.last_odom
+        # translation, orientation_q = self.transform_helper.convert_pose_inverse_transform(
+        #     msg.pose.pose)
+        # orientation = euler_from_quaternion(orientation_q)[2]
+        # odom = (translation[0], translation[1], orientation)
 
-        if last_odom is None or self.particles is None:
-            self.last_odom = odom
+        cur_pose_bl = PoseStamped()
+        cur_pose_bl.pose.orientation.w = 1.0
+        cur_pose_bl.header.frame_id = 'base_link'
+        cur_pose_bl.header.stamp = msg.header.stamp
+        pose_odom = self.tf_buf.transform(
+            cur_pose_bl, 'odom', rospy.Duration(0.5))
+        cur_pose = PoseTuple(*self.transform_helper.convert_pose_to_xy_and_theta(
+            pose_odom.pose))
+
+        if self.last_pose is None or self.particles is None:
+            self.last_pose = cur_pose
             return
 
         delta_pose = PoseTuple(
-            last_odom[0] - odom[0],
-            last_odom[1] - odom[1],
-            self.transform_helper.angle_diff(last_odom[2], odom[2])
+            self.last_pose[0] - cur_pose[0],
+            self.last_pose[1] - cur_pose[1],
+            self.transform_helper.angle_diff(self.last_pose[2], cur_pose[2])
         )
+
+        cur_pose_bl = PoseStamped()
+        cur_pose_bl.pose.orientation.w = 1.0
+        cur_pose_bl.header.frame_id = 'base_link'
+        cur_pose_bl.header.stamp = self.last_odom.header.stamp  # msg.header.stamp
+
+        delta_pose = self.tf_buf.transform_full(
+            cur_pose_bl, 'base_link', msg.header.stamp, 'odom', rospy.Duration(0.5))
+
+        delta_pose = PoseTuple(*self.transform_helper.convert_pose_to_xy_and_theta(
+            delta_pose.pose))
+
+        print("Delta Pose:", delta_pose)
 
         # Make sure we've moved at least a bit
         if math.sqrt((delta_pose[0] ** 2) + (delta_pose[1] ** 2)) < 0.05 and delta_pose[2] < 0.1:
             return
-        self.last_odom = odom
+        self.last_odom = msg
 
         now = rospy.Time.now()
 
         # Resample Particles
-        particles = self.sample_particles(
-            self.particles,
-            self.INITIAL_STATE_XY_SIGMA, self.INITIAL_STATE_XY_NOISE, self.INITIAL_STATE_THETA_SIGMA, self.INITIAL_STATE_THETA_NOISE, self.NUM_PARTICLES)
+        # particles = self.sample_particles(
+        #     self.particles,
+        #     self.INITIAL_STATE_XY_SIGMA, self.INITIAL_STATE_XY_NOISE, self.INITIAL_STATE_THETA_SIGMA, self.INITIAL_STATE_THETA_NOISE, self.NUM_PARTICLES)
+        particles = list(self.particles)
 
         # Apply Motion
         particles = self.apply_motion(particles, delta_pose, 0.05)
@@ -253,11 +278,27 @@ class ParticleFilter:
         self.map_obstacles = occupied
 
     def apply_motion(self, particles: List[Particle], delta_pose: PoseTuple, sigma: float) -> List[Particle]:
+        # If a particle has a heading of theta
+        # ihat(t-1) = [cos(theta), sin(theta)]
+        # jhat(t-1) = [-sin(theta), cos(theta)]
+        # x(t) = ihat(t) * delta.x + jhat(t)
+
+        dx_robot = sample_normal_error(delta_pose.x, sigma),
+        dy_robot = sample_normal_error(delta_pose.y, sigma),
+        dtheta = sample_normal_error(delta_pose.theta, sigma)
+
+        rot_dtheta = np.array([
+            [np.cos(dtheta), -np.sin(dtheta)],
+            [np.sin(dtheta), np.cos(dtheta)]
+        ])
+
+        dx, dy = np.matmul(rot_dtheta, [dx_robot, dy_robot])
+
         return [
             Particle(
-                x=p.x + sample_normal_error(delta_pose.x, sigma),
-                y=p.y + sample_normal_error(delta_pose.y, sigma),
-                theta=p.theta + sample_normal_error(delta_pose.theta, sigma),
+                x=p.x + dx,
+                y=p.y + dy,
+                theta=p.theta + dtheta,
                 weight=p.weight
             )
             for p in particles

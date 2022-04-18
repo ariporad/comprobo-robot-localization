@@ -8,6 +8,7 @@ from std_msgs.msg import Header
 from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
 
 import tf.transformations as t
+import tf2_ros
 from tf import TransformListener
 from tf import TransformBroadcaster
 
@@ -53,6 +54,8 @@ class TFHelper(object):
         transforms to ROS """
 
     def __init__(self):
+        self.tf_buf = tf2_ros.Buffer()
+        self.tf_listener2 = tf2_ros.TransformListener(self.tf_buf)
         self.tf_listener = TransformListener()
         self.tf_broadcaster = TransformBroadcaster()
 
@@ -140,8 +143,10 @@ class TFHelper(object):
         #                                   rospy.Time(0),  # XXX: stamp?
         #                                   rospy.Duration(1.0))
         # self.odom_to_map = self.tf_listener.transformPose('odom', p)
-        self.odom_to_map = self.tf_listener.transformPose(
-            'odom', pose_map_in_bl)
+        self.odom_to_map = self.tf_buf.transform(
+            pose_map_in_bl, 'odom', rospy.Duration(0.25))
+        # self.odom_to_map = self.tf_listener.transformPose(
+        #     'odom', pose_map_in_bl)
         (self.translation, self.rotation) = \
             self.convert_pose_inverse_transform(self.odom_to_map.pose)
 
