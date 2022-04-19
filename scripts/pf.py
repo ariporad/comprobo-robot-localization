@@ -13,7 +13,7 @@ from nav_msgs.msg import Odometry
 from nav_msgs.srv import GetMap
 from std_msgs.msg import Header
 from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, PoseStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, PoseStamped, Pose
 import tf2_ros
 import tf2_geometry_msgs
 from tf.transformations import euler_from_quaternion
@@ -118,6 +118,9 @@ class ParticleFilter:
         rospy.Subscriber("stable_scan", LaserScan, self.on_lidar)
 
         # publisher for the particle cloud for visualizing in rviz.
+        self.map_pub = rospy.Publisher("parsed_map",
+                                       PoseArray,
+                                       queue_size=10)
         self.particle_pub = rospy.Publisher("particlecloud",
                                             PoseArray,
                                             queue_size=10)
@@ -181,10 +184,10 @@ class ParticleFilter:
             # now = rospy.Time.now()
 
             # Resample Particles
-            # particles = self.sample_particles(
-            #     self.particles,
-            #     self.INITIAL_STATE_XY_SIGMA, self.INITIAL_STATE_XY_NOISE, self.INITIAL_STATE_THETA_SIGMA, self.INITIAL_STATE_THETA_NOISE, self.NUM_PARTICLES)
-            particles = list(self.particles)
+            particles = self.sample_particles(
+                self.particles,
+                self.INITIAL_STATE_XY_SIGMA, self.INITIAL_STATE_XY_NOISE, self.INITIAL_STATE_THETA_SIGMA, self.INITIAL_STATE_THETA_NOISE, self.NUM_PARTICLES)
+            # particles = list(self.particles)
 
             # Apply Motion
             particles = self.apply_motion(particles, delta_pose, 0.15)
@@ -194,7 +197,7 @@ class ParticleFilter:
                 for p in particles
             ]
 
-            # print("Particle weights:", sorted([p.weight for p in particles]))
+            print("Particle weights:", sorted([p.weight for p in particles]))
 
             self.last_pose = cur_pose
             self.set_particles(msg.header.stamp, particles)
@@ -290,6 +293,15 @@ class ParticleFilter:
                     curr += 1
         self.map_obstacles = occupied
 
+        # poses = PoseArray()
+        # poses.header.stamp = rospy.Time.now()
+        # poses.header.frame_id = 'map'
+        # poses.poses = [
+        #     self.transform_helper.convert_xy_and_theta_to_pose((x, y, 0))
+        #     for x, y in occupied
+        # ]
+        # self.map_pub.publish(poses)
+
     def apply_motion(self, particles: List[Particle], delta_pose: PoseTuple, sigma: float) -> List[Particle]:
         # If a particle has a heading of theta
         # ihat(t-1) = [cos(theta), sin(theta)]
@@ -364,9 +376,9 @@ class ParticleFilter:
         poses.poses = [
             self.transform_helper.convert_xy_and_theta_to_pose(
                 (particle.x, particle.y, particle.theta))
-            # sorted(self.particles, key=lambda p: p.weight)
-            for particle in self.particles
-        ]
+            for particle in sorted(self.particles, key=lambda p: p.weight)
+            # for particle in self.particles
+        ][-20:]
         self.particle_pub.publish(poses)
 
     def normalize_weights(self, particles: List[Particle]):
