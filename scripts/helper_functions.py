@@ -140,8 +140,8 @@ class TFHelper(object):
             header=Header(stamp=stamp, frame_id='base_link'))
         self.tf_listener.waitForTransform('base_link',
                                           'odom',
-                                          rospy.Time(0),  # XXX: stamp?
-                                          rospy.Duration(1.0))
+                                          stamp,
+                                          rospy.Duration(0.2))
         self.odom_to_map = self.tf_listener.transformPose(
             'odom', pose_map_in_bl)
         # self.odom_to_map = self.tf_buf.transform(
@@ -157,7 +157,7 @@ class TFHelper(object):
         #     self.translation[2],
         # ]
 
-        print("updated map ref frame:", self.translation, self.rotation)
+        # print("updated map ref frame:", self.translation, self.rotation)
 
     def send_last_map_to_odom_transform(self):
         if not(hasattr(self, 'translation') and hasattr(self, 'rotation')):

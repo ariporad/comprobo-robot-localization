@@ -5,7 +5,7 @@
 from collections import namedtuple
 
 import math
-from secrets import choice
+import time
 from typing import Iterable, Optional, Tuple, List
 import rospy
 import random
@@ -25,9 +25,17 @@ from helper_functions import TFHelper, print_time, sample_normal_error
 from occupancy_field import OccupancyField
 
 # NB: All particles are in the `map` frame
-Particle = namedtuple('Particle', ['x', 'y', 'theta', 'weight'])
-PoseTuple = namedtuple('PoseTuple', ['x', 'y', 'theta'])
 rng: Generator = default_rng()
+
+
+class Particle(namedtuple('Particle', ['x', 'y', 'theta', 'weight'])):
+    def __repr__(self):
+        return f"Particle(x={self.x:.3f}, y={self.y:.3f}, theta={self.theta:.3f}, w={self.weight:.6f})"
+
+
+class PoseTuple(namedtuple('PoseTuple', ['x', 'y', 'theta'])):
+    def __repr__(self):
+        return f"PoseTuple(x={self.x:.3f}, y={self.y:.3f}, theta={self.theta:.3f})"
 
 
 """
@@ -69,13 +77,13 @@ class ParticleFilter:
     The class that represents a Particle Filter ROS Node
     """
 
-    INITIAL_STATE_XY_SIGMA = 0.05
-    INITIAL_STATE_XY_NOISE = 0.05
+    INITIAL_STATE_XY_SIGMA = 0.10
+    INITIAL_STATE_XY_NOISE = 0.15
 
-    INITIAL_STATE_THETA_SIGMA = math.pi / 5
-    INITIAL_STATE_THETA_NOISE = 0.15
+    INITIAL_STATE_THETA_SIGMA = math.pi / 20
+    INITIAL_STATE_THETA_NOISE = 0.05
 
-    NUM_PARTICLES = 100
+    NUM_PARTICLES = 300
 
     particles: List[Particle] = None
     robot_pose: PoseStamped = None
@@ -86,9 +94,12 @@ class ParticleFilter:
     map_obstacles: np.array
     tf_listener: tf2_ros.TransformListener
 
+    is_updating: bool = False
+
     def __init__(self):
         rospy.init_node('pf')
         self.last_update = rospy.Time.now()
+        self.last_update_real = rospy.Time.now()
 
         # create instances of two helper objects that are provided to you
         # as part of the project
@@ -124,63 +135,75 @@ class ParticleFilter:
             [Particle(x, y, theta, 1)],
             self.INITIAL_STATE_XY_SIGMA, self.INITIAL_STATE_XY_NOISE, self.INITIAL_STATE_THETA_SIGMA, self.INITIAL_STATE_THETA_NOISE, self.NUM_PARTICLES)
 
-        self.set_particles(rospy.Time.now(), particles)
+        self.set_particles(msg.header.stamp, particles)
 
     def update(self, msg: Odometry):
-        # last_odom = self.last_odom
-        # translation, orientation_q = self.transform_helper.convert_pose_inverse_transform(
-        #     msg.pose.pose)
-        # orientation = euler_from_quaternion(orientation_q)[2]
-        # odom = (translation[0], translation[1], orientation)
+        if self.is_updating or msg.header.stamp < self.last_update_real:
+            return
+        self.is_updating = True
+        did_anything = False
+        start_time = time.perf_counter()
+        try:
+            # last_odom = self.last_odom
+            # translation, orientation_q = self.transform_helper.convert_pose_inverse_transform(
+            #     msg.pose.pose)
+            # orientation = euler_from_quaternion(orientation_q)[2]
+            # odom = (translation[0], translation[1], orientation)
 
-        cur_pose_bl = PoseStamped()
-        cur_pose_bl.pose.orientation.w = 1.0
-        cur_pose_bl.header.frame_id = 'base_link'
-        cur_pose_bl.header.stamp = msg.header.stamp
-        pose_odom = self.tf_buf.transform(
-            cur_pose_bl, 'odom', rospy.Duration(0.5))
-        cur_pose = PoseTuple(*self.transform_helper.convert_pose_to_xy_and_theta(
-            pose_odom.pose))
+            # cur_pose_bl = PoseStamped()
+            # cur_pose_bl.pose.orientation.w = 1.0
+            # cur_pose_bl.header.frame_id = 'base_link'
+            # cur_pose_bl.header.stamp = msg.header.stamp
+            # pose_odom = self.tf_buf.transform(
+            #     cur_pose_bl, 'odom', rospy.Duration(0))
+            cur_pose = PoseTuple(*self.transform_helper.convert_pose_to_xy_and_theta(
+                msg.pose.pose))
+            # pose_odom.pose))
 
-        if self.last_pose is None or self.particles is None:
+            if self.last_pose is None or self.particles is None:
+                self.last_pose = cur_pose
+                return
+
+            delta_pose = PoseTuple(
+                self.last_pose[0] - cur_pose[0],
+                self.last_pose[1] - cur_pose[1],
+                self.transform_helper.angle_diff(
+                    self.last_pose[2], cur_pose[2])
+            )
+
+            # Make sure we've moved at least a bit
+            if math.sqrt((delta_pose[0] ** 2) + (delta_pose[1] ** 2)) < 0.01 and delta_pose[2] < 0.05:
+                return
+
+            print("Delta Pose:", delta_pose)
+            did_anything = True
+
+            # now = rospy.Time.now()
+
+            # Resample Particles
+            # particles = self.sample_particles(
+            #     self.particles,
+            #     self.INITIAL_STATE_XY_SIGMA, self.INITIAL_STATE_XY_NOISE, self.INITIAL_STATE_THETA_SIGMA, self.INITIAL_STATE_THETA_NOISE, self.NUM_PARTICLES)
+            particles = list(self.particles)
+
+            # Apply Motion
+            particles = self.apply_motion(particles, delta_pose, 0.15)
+
+            particles = [
+                Particle(p.x, p.y, p.theta, self.calculate_sensor_weight(p))
+                for p in particles
+            ]
+
+            # print("Particle weights:", sorted([p.weight for p in particles]))
+
             self.last_pose = cur_pose
-            return
-
-        delta_pose = PoseTuple(
-            self.last_pose[0] - cur_pose[0],
-            self.last_pose[1] - cur_pose[1],
-            self.transform_helper.angle_diff(self.last_pose[2], cur_pose[2])
-        )
-
-        # print("Delta Pose:", delta_pose)
-
-        # Make sure we've moved at least a bit
-        if math.sqrt((delta_pose[0] ** 2) + (delta_pose[1] ** 2)) < 0.05 and delta_pose[2] < 0.1:
-            return
-
-        self.last_pose = cur_pose
-
-        # now = rospy.Time.now()
-
-        # Resample Particles
-        # particles = self.sample_particles(
-        #     self.particles,
-        #     self.INITIAL_STATE_XY_SIGMA, self.INITIAL_STATE_XY_NOISE, self.INITIAL_STATE_THETA_SIGMA, self.INITIAL_STATE_THETA_NOISE, self.NUM_PARTICLES)
-        particles = list(self.particles)
-
-        # Apply Motion
-        particles = self.apply_motion(particles, delta_pose, 0.05)
-
-        particles = [
-            Particle(p.x, p.y, p.theta, self.calculate_sensor_weight(p))
-            for p in particles
-        ]
-
-        particles = self.normalize_weights(particles)
-
-        print("Particle weights:", sorted([p.weight for p in particles]))
-
-        self.set_particles(msg.header.stamp, particles)
+            self.set_particles(msg.header.stamp, particles)
+            self.last_update_real = rospy.Time.now()
+        finally:
+            if did_anything:
+                print(
+                    f"Update took {(time.perf_counter() - start_time) * 1000:.2f}ms.\n")
+            self.is_updating = False
 
     def calculate_sensor_weight(self, particle: Particle) -> float:
         # I think this is broken
@@ -231,7 +254,7 @@ class ParticleFilter:
         diff_lidar = np.abs(actual_lidar - expected_lidar)[mask]
         total_diff = np.sum(diff_lidar)
 
-        weight = np.sum((diff_lidar / 10) ** 10)
+        weight = np.sum((diff_lidar / 10) ** 3)
 
         # _debug = np.zeros((360, 3))
 
@@ -293,7 +316,7 @@ class ParticleFilter:
             Particle(
                 x=p.x + dx,
                 y=p.y + dy,
-                theta=p.theta + dtheta,
+                theta=p.theta - dtheta,
                 weight=p.weight
             )
             for p in particles
@@ -341,9 +364,9 @@ class ParticleFilter:
         poses.poses = [
             self.transform_helper.convert_xy_and_theta_to_pose(
                 (particle.x, particle.y, particle.theta))
-            for particle in sorted(self.particles, key=lambda p: p.weight)
-            # if particle.weight >= 0.01
-        ][-15:]
+            # sorted(self.particles, key=lambda p: p.weight)
+            for particle in self.particles
+        ]
         self.particle_pub.publish(poses)
 
     def normalize_weights(self, particles: List[Particle]):
