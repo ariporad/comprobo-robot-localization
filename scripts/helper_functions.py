@@ -45,7 +45,7 @@ def sample_normal_error(value: float, sigma: float):
 
     sign = signum(value)
     value_abs = abs(value)
-    return (sign * rng.normal(value_abs, value_abs * sigma))
+    return sign * rng.normal(value_abs, value_abs * sigma)
 
 
 class TFHelper(object):
@@ -138,13 +138,14 @@ class TFHelper(object):
             pose=self.convert_translation_rotation_to_pose(translation_bl2map,
                                                            rotation_bl2map),
             header=Header(stamp=stamp, frame_id='base_link'))
-        # self.tf_listener.waitForTransform('base_link',
-        #                                   'odom',
-        #                                   rospy.Time(0),  # XXX: stamp?
-        #                                   rospy.Duration(1.0))
-        # self.odom_to_map = self.tf_listener.transformPose('odom', p)
-        self.odom_to_map = self.tf_buf.transform(
-            pose_map_in_bl, 'odom', rospy.Duration(0.25))
+        self.tf_listener.waitForTransform('base_link',
+                                          'odom',
+                                          rospy.Time(0),  # XXX: stamp?
+                                          rospy.Duration(1.0))
+        self.odom_to_map = self.tf_listener.transformPose(
+            'odom', pose_map_in_bl)
+        # self.odom_to_map = self.tf_buf.transform(
+        #     pose_map_in_bl, 'odom', rospy.Duration(0.25))
         # self.odom_to_map = self.tf_listener.transformPose(
         #     'odom', pose_map_in_bl)
         (self.translation, self.rotation) = \

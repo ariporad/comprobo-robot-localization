@@ -69,11 +69,11 @@ class ParticleFilter:
     The class that represents a Particle Filter ROS Node
     """
 
-    INITIAL_STATE_XY_SIGMA = 0.15
-    INITIAL_STATE_XY_NOISE = 0.15
+    INITIAL_STATE_XY_SIGMA = 0.05
+    INITIAL_STATE_XY_NOISE = 0.05
 
-    INITIAL_STATE_THETA_SIGMA = math.pi / 10
-    INITIAL_STATE_THETA_NOISE = 0.05
+    INITIAL_STATE_THETA_SIGMA = math.pi / 5
+    INITIAL_STATE_THETA_NOISE = 0.15
 
     NUM_PARTICLES = 100
 
@@ -152,25 +152,15 @@ class ParticleFilter:
             self.transform_helper.angle_diff(self.last_pose[2], cur_pose[2])
         )
 
-        cur_pose_bl = PoseStamped()
-        cur_pose_bl.pose.orientation.w = 1.0
-        cur_pose_bl.header.frame_id = 'base_link'
-        cur_pose_bl.header.stamp = self.last_odom.header.stamp  # msg.header.stamp
-
-        delta_pose = self.tf_buf.transform_full(
-            cur_pose_bl, 'base_link', msg.header.stamp, 'odom', rospy.Duration(0.5))
-
-        delta_pose = PoseTuple(*self.transform_helper.convert_pose_to_xy_and_theta(
-            delta_pose.pose))
-
-        print("Delta Pose:", delta_pose)
+        # print("Delta Pose:", delta_pose)
 
         # Make sure we've moved at least a bit
         if math.sqrt((delta_pose[0] ** 2) + (delta_pose[1] ** 2)) < 0.05 and delta_pose[2] < 0.1:
             return
-        self.last_odom = msg
 
-        now = rospy.Time.now()
+        self.last_pose = cur_pose
+
+        # now = rospy.Time.now()
 
         # Resample Particles
         # particles = self.sample_particles(
@@ -190,7 +180,7 @@ class ParticleFilter:
 
         print("Particle weights:", sorted([p.weight for p in particles]))
 
-        self.set_particles(now, particles)
+        self.set_particles(msg.header.stamp, particles)
 
     def calculate_sensor_weight(self, particle: Particle) -> float:
         # I think this is broken
@@ -283,9 +273,14 @@ class ParticleFilter:
         # jhat(t-1) = [-sin(theta), cos(theta)]
         # x(t) = ihat(t) * delta.x + jhat(t)
 
-        dx_robot = sample_normal_error(delta_pose.x, sigma),
-        dy_robot = sample_normal_error(delta_pose.y, sigma),
+        # print(
+        #     f"delta_pose.x={delta_pose.x}, delta_pose.y={delta_pose.y}, delta_pose.theta={delta_pose.theta}")
+
+        dx_robot = sample_normal_error(delta_pose.x, sigma)
+        dy_robot = sample_normal_error(delta_pose.y, sigma)
         dtheta = sample_normal_error(delta_pose.theta, sigma)
+
+        # print(f"dx_r={dx_robot}, dy_r={dy_robot}, dtheta={dtheta}")
 
         rot_dtheta = np.array([
             [np.cos(dtheta), -np.sin(dtheta)],
@@ -346,9 +341,9 @@ class ParticleFilter:
         poses.poses = [
             self.transform_helper.convert_xy_and_theta_to_pose(
                 (particle.x, particle.y, particle.theta))
-            for particle in self.particles
-            # if particle.weight >= 0.0001
-        ]
+            for particle in sorted(self.particles, key=lambda p: p.weight)
+            # if particle.weight >= 0.01
+        ][-15:]
         self.particle_pub.publish(poses)
 
     def normalize_weights(self, particles: List[Particle]):
