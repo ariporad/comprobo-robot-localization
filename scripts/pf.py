@@ -85,9 +85,9 @@ class ParticleFilter:
     INITIAL_STATE_XY_NOISE = 0.01
 
     INITIAL_STATE_THETA_SIGMA = 0.15 * math.pi
-    INITIAL_STATE_THETA_NOISE = 0.15
+    INITIAL_STATE_THETA_NOISE = 0.00
 
-    NUM_PARTICLES = 100
+    NUM_PARTICLES = 300
 
     particles: List[Particle] = None
     robot_pose: PoseStamped = None
@@ -254,18 +254,27 @@ class ParticleFilter:
 
         # Take the minimum at each angle
         # Indexed like lidar data, where each index is the degree
-        expected_lidar = np.zeros(360)
+        expected_lidar = np.empty(360)
+        expected_lidar[:] = np.NaN
 
         for phi, rho in zip(phi, rho):
             # phi is already an integer, just make the type right
             idx = int(phi)
 
             # Don't care if we don't have any LIDAR data
-            if actual_lidar[idx] == 0.0:
-                continue
 
-            if expected_lidar[idx] == 0.0 or rho < expected_lidar[idx]:
+            # 10 is (IIRC) the max range of the LIDAR sensor. Anything more than that comes as null
+            # if rho > 10.0:
+            #     continue
+
+            if rho > 3.0:
+                rho = 0.0
+
+            if np.isnan(expected_lidar[idx]) or rho < expected_lidar[idx]:
                 expected_lidar[idx] = rho
+
+        expected_lidar[np.isnan(expected_lidar)] = 0.0  # ???
+        # print(expected_lidar)
 
         if save:
             ax.plot(np.deg2rad(np.arange(0, 360)), expected_lidar, 'c.')
@@ -275,13 +284,13 @@ class ParticleFilter:
 
         # Compare to LIDAR data (don't forget to drop the extra point #360)
         mask = actual_lidar > 0.0
-        diff_lidar = np.abs((actual_lidar - expected_lidar) / actual_lidar)
+        diff_lidar = np.abs(actual_lidar - expected_lidar)
 
-        if save:
-            ax.plot(np.deg2rad(np.arange(0, 360))[
-                    mask], diff_lidar[mask], 'g.')
+        # if save:
+        #     ax.plot(np.deg2rad(np.arange(0, 360))[
+        #             mask], diff_lidar[mask], 'g.')
 
-        weight = np.sum((1 / diff_lidar[mask]) ** 3)
+        weight = np.sum((1 / diff_lidar[diff_lidar > 0.0]) ** 3)
 
         if save:
             ax.set_title(
@@ -413,8 +422,8 @@ class ParticleFilter:
                 self.transform_helper.convert_xy_and_theta_to_pose(
                     (particle.x, particle.y, particle.theta)
                 ))
-            self.calculate_sensor_weight(
-                particle, save=True, save_name=f"particle_{self.update_count:03d}")
+            # self.calculate_sensor_weight(
+            #     particle, save=True, save_name=f"particle_{self.update_count:03d}")
         self.update_count += 1
 
         self.particle_pub.publish(poses)
