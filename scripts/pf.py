@@ -15,6 +15,7 @@ import rospy
 import random
 from nav_msgs.msg import Odometry
 from nav_msgs.srv import GetMap
+from motion_model import MotionModel
 from std_msgs.msg import Header
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, PoseStamped, Pose
@@ -25,45 +26,11 @@ from tf.transformations import euler_from_quaternion
 import numpy as np
 from numpy.random import default_rng, Generator
 
-from helper_functions import TFHelper,  PoseTuple, Particle, RandomSampler, RelativeRandomSampler
+from helper_functions import TFHelper,  PoseTuple, Particle, RandomSampler, RelativeRandomSampler, print_time
 from sensor_model import SensorModel
 from occupancy_field import OccupancyField
 
 rng: Generator = default_rng()
-
-
-"""
-# The Plan
-
-We need:
-- Initial State Model: P(x0)
-    - initialpose topic + uncertainty
-- Motion Model (odometry): P(Xt | X(t-1), Ut)
-    - This needs to be odometry + uncertainty
-- Sensor Model: P(Zt | xt)
-    - Based on occupancy model + flat noise uncertainty + normal distribution
-
-Setup:
-1. Create initial particles:
-    - Weighted random sample from p(x0)
-       - How to do 2d weighted random sample properly?
-       - We're going to do this wrong to start, by doing X and Y seperately
-
-Repeat:
-2. Resample particles, using weights as the distribution
-3. Update each particle with the motion model (odometry)
-    - Figure out where odom is now (convert (0,0,0):base_link -> odom)
-    - Compare that with last cycle to get delta_odom
-    - For each particle, update x/y/theta by a random sample of delta_odom
-4. Compute weights: likelyhood that we would have gotten the laser data if we were at each particle
-    - Use the occupancy field for this
-    - Normalize weights to 1
-5. Goto Step 2
-
-Notes:
-- Convention for normal distributions: sigma is stddev, noise the proportion of time to pick a random value
-
-"""
 
 
 class ParticleFilter:
@@ -74,7 +41,8 @@ class ParticleFilter:
     particle_sampler_xy = RandomSampler(0.25, 0.1, (-5, 5))
     particle_sampler_theta = RandomSampler(0.15 * math.pi, 0)
 
-    motion_error_sampler = RelativeRandomSampler(.15)
+    motion_model = MotionModel(stddev=.15)
+    sensor_model = SensorModel()
 
     NUM_PARTICLES = 300
 
@@ -93,6 +61,7 @@ class ParticleFilter:
     def __init__(self):
         rospy.init_node('pf')
         self.last_update = rospy.Time.now()
+        self.particles_stamp = rospy.Time.now()
 
         self.update_count = 0
 
@@ -113,28 +82,31 @@ class ParticleFilter:
 
         rospy.wait_for_service("static_map")
         get_static_map = rospy.ServiceProxy("static_map", GetMap)
-        self.sensor_model = SensorModel.from_map(get_static_map().map)
+        self.sensor_model.set_map(get_static_map().map)
 
         # IMPORTANT: Register subscribers last, so callbacks can't happen before ready
         # pose_listener responds to selection of a new approximate robot
         # location (for instance using rviz)
         rospy.Subscriber("initialpose",
                          PoseWithCovarianceStamped,
-                         self.update_initial_pose)
+                         self.on_initial_pose)
 
         rospy.Subscriber("odom", Odometry, self.on_odom)
         rospy.Subscriber("stable_scan", LaserScan, self.on_lidar)
 
-    def update_initial_pose(self, msg: PoseWithCovarianceStamped):
+    def on_initial_pose(self, msg: PoseWithCovarianceStamped):
         """ Callback function to handle re-initializing the particle filter
             based on a pose estimate.  These pose estimates could be generated
             by another ROS Node or could come from the rviz GUI """
         x, y, theta = self.transform_helper.convert_pose_to_xy_and_theta(
             msg.pose.pose)
 
-        particles = self.sample_particles([Particle(x, y, theta, 1)])
+        particles = self.resample_particles([Particle(x, y, theta, 1)])
 
         self.set_particles(msg.header.stamp, particles)
+
+    def on_lidar(self, msg: LaserScan):
+        self.sensor_model.set_lidar_ranges(msg.ranges)
 
     def on_odom(self, msg: Odometry):
         pose = PoseTuple(
@@ -150,8 +122,6 @@ class ParticleFilter:
             self.transform_helper.angle_diff(
                 self.last_pose[2], pose[2])
         )
-
-        print("Delta pose:", delta_pose)
 
         # Make sure we've moved at least a bit
         if math.sqrt((delta_pose[0] ** 2) + (delta_pose[1] ** 2)) < 0.01 and delta_pose[2] < 0.05:
@@ -169,59 +139,36 @@ class ParticleFilter:
         if self.particles is None:
             return False
 
-            # We don't do multiple updates in parallel
+        # We don't do multiple updates in parallel
         if self.is_updating:
             return False
 
         self.is_updating = True
-        start_time = time.perf_counter()
         try:
-            # Resample Particles
-            particles = self.sample_particles(self.particles)
-            # particles = list(self.particles)
+            with print_time('Updating'):
+                # Resample Particles
+                particles = self.resample_particles(self.particles)
 
-            # Apply Motion
-            particles = self.apply_motion(particles, delta_pose)
+                # Apply Motion Model
+                particles = self.motion_model.apply(particles, delta_pose)
 
-            particles = [
-                Particle(p.x, p.y, p.theta,
-                         self.sensor_model.calculate_weight(p))
-                for p in particles
-            ]
+                # Update Weights Based on Sensor Model
+                particles = [
+                    Particle(p.x, p.y, p.theta,
+                             self.sensor_model.calculate_weight(p))
+                    for p in particles
+                ]
 
-            self.set_particles(stamp, particles)
-            self.last_update = rospy.Time.now()
+                # Set Particles
+                self.set_particles(stamp, particles)
+
+                self.last_update = rospy.Time.now()
         finally:
             self.is_updating = False
 
-            duration_ms = (time.perf_counter() - start_time) * 1000
-            print(f"Update took {duration_ms:.2f}ms.\n")
-
         return True
 
-    def apply_motion(self, particles: List[Particle], delta_pose: PoseTuple, sigma: float) -> List[Particle]:
-        dx_robot = self.motion_error_sampler.sample(delta_pose.x)
-        dy_robot = self.motion_error_sampler.sample(delta_pose.y)
-        dtheta = self.motion_error_sampler.sample(delta_pose.theta)
-
-        rot_dtheta = np.array([
-            [np.cos(dtheta), -np.sin(dtheta)],
-            [np.sin(dtheta), np.cos(dtheta)]
-        ])
-
-        dx, dy = np.matmul(rot_dtheta, [dx_robot, dy_robot])
-
-        return [
-            Particle(
-                x=p.x + dx,
-                y=p.y + dy,
-                theta=p.theta - dtheta,
-                weight=p.weight
-            )
-            for p in particles
-        ]
-
-    def sample_particles(self, particles: List[Particle], k: int = None) -> List[Particle]:
+    def resample_particles(self, particles: List[Particle], k: int = None) -> List[Particle]:
         if k is None:
             k = self.NUM_PARTICLES
 
@@ -242,42 +189,40 @@ class ParticleFilter:
         ]
 
     def set_particles(self, stamp: rospy.Time, particles: List[Particle]):
-        # self.particles = particles
         self.particles = self.normalize_weights(particles)
+        self.particles_stamp = stamp
 
-        # if self.tf_buf.can_transform('base_link', 'odom', stamp, rospy.Duration(1)) or True:
-        # Calculate robot pose / map frame
         # NB: Particles are always in the map reference frame
-        robot_pose = self.transform_helper.convert_xy_and_theta_to_pose(np.average([  # TODO: should this be median?
+        robot_pose = np.average([  # TODO: should this be median?
             (particle.x, particle.y, particle.theta)
             for particle in self.particles
-        ], axis=0, weights=[p.weight for p in particles]))
-        # robot_pose is where the robot is in map
-        # By definition, that's also (0, 0, 0) in base_link
-        # So the inverse of robot_pose is the transformation between base_link and map
-        # Subtract whatever the tranformation from base_link to odom is, and you get odom->map
+        ], axis=0, weights=[p.weight for p in particles])
 
-        self.transform_helper.fix_map_to_odom_transform(stamp, robot_pose)
+        self.transform_helper.fix_map_to_odom_transform(
+            stamp,
+            self.transform_helper.convert_xy_and_theta_to_pose(robot_pose)
+        )
 
+    def visualize_particles(self):
         # Publish particles
         poses = PoseArray()
-        poses.header.stamp = stamp
+        poses.header.stamp = self.particles_stamp
         poses.header.frame_id = 'map'
-
-        particles = list(
-            sorted(list(random.choices(self.particles, k=30)), key=lambda p: p.weight))
-        for i, particle in enumerate(particles):
-            # for particle in self.particles:
-            poses.poses.append(
-                self.transform_helper.convert_xy_and_theta_to_pose(
-                    (particle.x, particle.y, particle.theta)
-                ))
-            # self.sensor_model.calculate_weight(particle)
-            # self.sensor_model.save_debug_plot(
-            #     f"particle_{self.update_count:03d}")
-        self.update_count += 1
-
+        poses.poses = [
+            self.transform_helper.convert_xy_and_theta_to_pose(
+                (particle.x, particle.y, particle.theta)
+            )
+            for particle in self.particles
+        ]
         self.particle_pub.publish(poses)
+
+        # particles = list(
+        #     sorted(list(random.choices(self.particles, k=30)), key=lambda p: p.weight))
+        # for i, particle in enumerate(particles):
+        #     # self.sensor_model.calculate_weight(particle)
+        #     # self.sensor_model.save_debug_plot(
+        #     #     f"particle_{self.update_count:03d}")
+        #     self.update_count += 1
 
     def normalize_weights(self, particles: List[Particle]):
         total = sum(p.weight for p in particles)
@@ -285,9 +230,6 @@ class ParticleFilter:
             Particle(p.x, p.y, p.theta, p.weight / total)
             for p in particles
         ]
-
-    def on_lidar(self, msg: LaserScan):
-        self.sensor_model.set_lidar_ranges(msg.ranges)
 
     def run(self):
         r = rospy.Rate(5)

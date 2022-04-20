@@ -93,12 +93,19 @@ class RelativeRandomSampler:
         self.noise != 0.0
 
 
+def rotation_matrix(angle: float) -> np.array:
+    return np.array([
+        [np.cos(angle), -np.sin(angle)],
+        [np.sin(angle), np.cos(angle)]
+    ])
+
+
 @contextmanager
 def print_time(name: str = "Timer"):
     start = perf_counter()
     yield
     duration = perf_counter() - start
-    print(f"Timer '{name}' took {duration:.2f}s   ")
+    print(f"{name} took {duration * 1000:.2f}ms.\n")
 
 
 def signum(a: float) -> float:

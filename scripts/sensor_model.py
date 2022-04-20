@@ -28,10 +28,10 @@ from occupancy_field import OccupancyField
 
 class SensorModel:
     lidar_actual: Optional[np.array] = None
-    map_obstacles: np.array
+    map_obstacles: Optional[np.array] = None
 
-    def __init__(self, map_obstacles: np.array):
-        self.map_obstacles = map_obstacles
+    def set_map(self, map: OccupancyGrid):
+        self.map_obstacles = self.preprocess_map(map)
 
     def set_lidar_ranges(self, ranges: list):
         self.lidar_actual = np.array(ranges[0:360])
@@ -103,10 +103,6 @@ class SensorModel:
         data_dir.mkdir(exist_ok=True)
         fig.savefig(data_dir / f"{name}_{self.weight:010.6f}.png")
         plt.close(fig)
-
-    @classmethod
-    def from_map(cls, map: OccupancyGrid) -> 'SensorModel':
-        return cls(cls.preprocess_map(map))
 
     @staticmethod
     def preprocess_map(map: OccupancyGrid) -> np.array:
