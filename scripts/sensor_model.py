@@ -78,7 +78,7 @@ class SensorModel:
             if r > 3.0:
                 continue
 
-            if r < self.lidar_expected[idx]:
+            if self.lidar_expected[idx] == 0.0 or r < self.lidar_expected[idx]:
                 self.lidar_expected[idx] = r
 
         # Compare to LIDAR data

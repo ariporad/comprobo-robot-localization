@@ -21,6 +21,8 @@ from helper_functions import TFHelper,  PoseTuple, Particle, RandomSampler, prin
 
 
 class ParticleFilter:
+    DEBUG_SAVE_SENSOR_STATE_PLOTS = 15
+
     NUM_PARTICLES = 300
 
     particle_sampler_xy = RandomSampler(0.25, 0.1, (-5, 5))
@@ -48,7 +50,7 @@ class ParticleFilter:
 
     tf_listener: tf2_ros.TransformListener
     tf_buf: tf2_ros.Buffer
-    transform_helper: TFHelper = TFHelper()
+    tf_helper: TFHelper
 
     def __init__(self):
         rospy.init_node('pf')
@@ -58,6 +60,7 @@ class ParticleFilter:
 
         self.tf_buf = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buf)
+        self.tf_helper = TFHelper()
 
         # publisher for the particle cloud for visualizing in rviz.
         self.particle_pub = rospy.Publisher("particlecloud",
@@ -81,7 +84,7 @@ class ParticleFilter:
     def on_initial_pose(self, msg: PoseWithCovarianceStamped):
         """ Callback to (re-)initialize the particle filter whenever an initial pose is set. """
         x, y, theta = \
-            self.transform_helper.convert_pose_to_xy_and_theta(msg.pose.pose)
+            self.tf_helper.convert_pose_to_xy_and_theta(msg.pose.pose)
 
         particles = self.resample_particles([Particle(x, y, theta, 1)])
 
@@ -89,12 +92,12 @@ class ParticleFilter:
 
     def on_lidar(self, msg: LaserScan):
         """ Callback whenever new LIDAR data is available. """
-        self.sensor_model.set_lidar_ranges(msg.ranges)
+        self.sensor_model.set_lidar(msg.ranges)
 
     def on_odom(self, msg: Odometry):
         """ Callback whenever new odometry data is available. """
         pose = PoseTuple(
-            *self.transform_helper.convert_pose_to_xy_and_theta(msg.pose.pose))
+            *self.tf_helper.convert_pose_to_xy_and_theta(msg.pose.pose))
 
         if self.last_pose is None:
             self.last_pose = pose
@@ -103,13 +106,13 @@ class ParticleFilter:
         delta_pose = PoseTuple(
             self.last_pose[0] - pose[0],
             self.last_pose[1] - pose[1],
-            self.transform_helper.angle_diff(
+            self.tf_helper.angle_diff(
                 self.last_pose[2], pose[2])
         )
 
         # Make sure we've moved at least a bit
-        if math.sqrt((delta_pose[0] ** 2) + (delta_pose[1] ** 2)) < self.update_min_distance \
-                and delta_pose[2] < self.update_min_rotation:
+        if math.sqrt((delta_pose[0] ** 2) + (delta_pose[1] ** 2)) < self.UPDATE_MIN_DISTANCE \
+                and delta_pose[2] < self.UPDATE_MIN_ROTATION:
             return
 
         if self.update(msg.header.stamp, delta_pose):
@@ -212,9 +215,9 @@ class ParticleFilter:
             for particle in self.particles
         ], axis=0, weights=[p.weight for p in particles])
 
-        self.transform_helper.fix_map_to_odom_transform(
+        self.tf_helper.fix_map_to_odom_transform(
             stamp,
-            self.transform_helper.convert_xy_and_theta_to_pose(robot_pose)
+            self.tf_helper.convert_xy_and_theta_to_pose(robot_pose)
         )
 
         self.visualize_particles()
@@ -226,20 +229,21 @@ class ParticleFilter:
         poses.header.stamp = self.particles_stamp
         poses.header.frame_id = 'map'
         poses.poses = [
-            self.transform_helper.convert_xy_and_theta_to_pose(
+            self.tf_helper.convert_xy_and_theta_to_pose(
                 (particle.x, particle.y, particle.theta)
             )
             for particle in self.particles
         ]
         self.particle_pub.publish(poses)
 
-        # particles = list(
-        #     sorted(list(random.choices(self.particles, k=30)), key=lambda p: p.weight))
-        # for i, particle in enumerate(particles):
-        #     # self.sensor_model.calculate_weight(particle)
-        #     # self.sensor_model.save_debug_plot(
-        #     #     f"particle_{self.update_count:03d}")
-        #     self.update_count += 1
+        # Save some images of sensor model internal state
+        # To enable or disable this, change DEBUG_SAVE_SENSOR_STATE_PLOTS to a number (15 is good),
+        # or 0 (to disable).
+        for particle in random.choices(self.particles, k=self.DEBUG_SAVE_SENSOR_STATE_PLOTS):
+            self.sensor_model.calculate_weight(particle)
+            self.sensor_model.save_debug_plot(
+                f"particle_{self.update_count:03d}")
+        self.update_count += 1
 
     def normalize_weights(self, particles: List[Particle]) -> List[Particle]:
         """
@@ -259,7 +263,7 @@ class ParticleFilter:
         while not rospy.is_shutdown():
             # in the main loop all we do is continuously broadcast the latest
             # map to odom transform
-            self.transform_helper.send_last_map_to_odom_transform()
+            self.tf_helper.send_last_map_to_odom_transform()
             r.sleep()
 
 
