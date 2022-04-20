@@ -18,8 +18,26 @@ from numpy.random import default_rng, Generator
 
 import math
 from contextlib import contextmanager
+from collections import namedtuple
 
 rng = default_rng()
+
+# NB: All particles are in the `map` frame
+
+
+class Particle(namedtuple('Particle', ['x', 'y', 'theta', 'weight'])):
+    def __repr__(self):
+        return f"Particle(x={self.x:.3f}, y={self.y:.3f}, theta={self.theta:.3f}, w={self.weight:.6f})"
+
+
+class PoseTuple(namedtuple('PoseTuple', ['x', 'y', 'theta'])):
+    def __repr__(self):
+        return f"PoseTuple(x={self.x:.3f}, y={self.y:.3f}, theta={self.theta:.3f})"
+
+
+def normalize_angle(angle):
+    """ Normalize angle to [-pi, pi]. Works on floats or numpy arrays."""
+    return np.arctan2(np.sin(angle), np.cos(angle))
 
 
 @contextmanager

@@ -25,21 +25,11 @@ from tf.transformations import euler_from_quaternion
 import numpy as np
 from numpy.random import default_rng, Generator
 
-from helper_functions import TFHelper, print_time, sample_normal, sample_normal_error
+from helper_functions import TFHelper, print_time, sample_normal, sample_normal_error, PoseTuple, Particle
+from sensor_model import SensorModel
 from occupancy_field import OccupancyField
 
-# NB: All particles are in the `map` frame
 rng: Generator = default_rng()
-
-
-class Particle(namedtuple('Particle', ['x', 'y', 'theta', 'weight'])):
-    def __repr__(self):
-        return f"Particle(x={self.x:.3f}, y={self.y:.3f}, theta={self.theta:.3f}, w={self.weight:.6f})"
-
-
-class PoseTuple(namedtuple('PoseTuple', ['x', 'y', 'theta'])):
-    def __repr__(self):
-        return f"PoseTuple(x={self.x:.3f}, y={self.y:.3f}, theta={self.theta:.3f})"
 
 
 """
@@ -89,11 +79,12 @@ class ParticleFilter:
 
     NUM_PARTICLES = 300
 
+    sensor_model: SensorModel
+
     particles: List[Particle] = None
     robot_pose: PoseStamped = None
 
     last_pose: PoseTuple = None
-    last_lidar: Optional[LaserScan] = None
 
     map_obstacles: np.array
     tf_listener: tf2_ros.TransformListener
@@ -103,7 +94,6 @@ class ParticleFilter:
     def __init__(self):
         rospy.init_node('pf')
         self.last_update = rospy.Time.now()
-        self.last_update_real = rospy.Time.now()
 
         self.update_count = 0
 
@@ -114,15 +104,6 @@ class ParticleFilter:
         self.tf_buf = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buf)
 
-        # pose_listener responds to selection of a new approximate robot
-        # location (for instance using rviz)
-        rospy.Subscriber("initialpose",
-                         PoseWithCovarianceStamped,
-                         self.update_initial_pose)
-
-        rospy.Subscriber("odom", Odometry, self.update)
-        rospy.Subscriber("stable_scan", LaserScan, self.on_lidar)
-
         # publisher for the particle cloud for visualizing in rviz.
         self.map_pub = rospy.Publisher("parsed_map",
                                        PoseArray,
@@ -131,7 +112,19 @@ class ParticleFilter:
                                             PoseArray,
                                             queue_size=10)
 
-        self.preprocess_map()
+        rospy.wait_for_service("static_map")
+        get_static_map = rospy.ServiceProxy("static_map", GetMap)
+        self.sensor_model = SensorModel.from_map(get_static_map().map)
+
+        # IMPORTANT: Register subscribers last, so callbacks can't happen before ready
+        # pose_listener responds to selection of a new approximate robot
+        # location (for instance using rviz)
+        rospy.Subscriber("initialpose",
+                         PoseWithCovarianceStamped,
+                         self.update_initial_pose)
+
+        rospy.Subscriber("odom", Odometry, self.on_odom)
+        rospy.Subscriber("stable_scan", LaserScan, self.on_lidar)
 
     def update_initial_pose(self, msg: PoseWithCovarianceStamped):
         """ Callback function to handle re-initializing the particle filter
@@ -146,49 +139,46 @@ class ParticleFilter:
 
         self.set_particles(msg.header.stamp, particles)
 
-    def update(self, msg: Odometry):
-        if self.is_updating or msg.header.stamp < self.last_update_real:
+    def on_odom(self, msg: Odometry):
+        pose = PoseTuple(
+            *self.transform_helper.convert_pose_to_xy_and_theta(msg.pose.pose))
+
+        if self.last_pose is None:
+            self.last_pose = pose
             return
+
+        delta_pose = PoseTuple(
+            self.last_pose[0] - pose[0],
+            self.last_pose[1] - pose[1],
+            self.transform_helper.angle_diff(
+                self.last_pose[2], pose[2])
+        )
+
+        print("Delta pose:", delta_pose)
+
+        # Make sure we've moved at least a bit
+        if math.sqrt((delta_pose[0] ** 2) + (delta_pose[1] ** 2)) < 0.01 and delta_pose[2] < 0.05:
+            return
+
+        if self.update(msg.header.stamp, delta_pose):
+            self.last_pose = pose
+
+    def update(self, stamp: rospy.Time, delta_pose: PoseTuple) -> bool:
+        # Ignore any updates that happened while we were working on the last update (allows queue to drain)
+        if stamp < self.last_update:
+            return False
+
+        # Require previous particles (initialized by initial pose)
+        if self.particles is None:
+            return False
+
+            # We don't do multiple updates in parallel
+        if self.is_updating:
+            return False
+
         self.is_updating = True
-        did_anything = False
         start_time = time.perf_counter()
         try:
-            # last_odom = self.last_odom
-            # translation, orientation_q = self.transform_helper.convert_pose_inverse_transform(
-            #     msg.pose.pose)
-            # orientation = euler_from_quaternion(orientation_q)[2]
-            # odom = (translation[0], translation[1], orientation)
-
-            # cur_pose_bl = PoseStamped()
-            # cur_pose_bl.pose.orientation.w = 1.0
-            # cur_pose_bl.header.frame_id = 'base_link'
-            # cur_pose_bl.header.stamp = msg.header.stamp
-            # pose_odom = self.tf_buf.transform(
-            #     cur_pose_bl, 'odom', rospy.Duration(0))
-            cur_pose = PoseTuple(*self.transform_helper.convert_pose_to_xy_and_theta(
-                msg.pose.pose))
-            # pose_odom.pose))
-
-            if self.last_pose is None or self.particles is None:
-                self.last_pose = cur_pose
-                return
-
-            delta_pose = PoseTuple(
-                self.last_pose[0] - cur_pose[0],
-                self.last_pose[1] - cur_pose[1],
-                self.transform_helper.angle_diff(
-                    self.last_pose[2], cur_pose[2])
-            )
-
-            # Make sure we've moved at least a bit
-            if math.sqrt((delta_pose[0] ** 2) + (delta_pose[1] ** 2)) < 0.01 and delta_pose[2] < 0.05:
-                return
-
-            print("Delta Pose:", delta_pose)
-            did_anything = True
-
-            # now = rospy.Time.now()
-
             # Resample Particles
             particles = self.sample_particles(
                 self.particles,
@@ -199,142 +189,20 @@ class ParticleFilter:
             particles = self.apply_motion(particles, delta_pose, 0.15)
 
             particles = [
-                Particle(p.x, p.y, p.theta, self.calculate_sensor_weight(p))
+                Particle(p.x, p.y, p.theta,
+                         self.sensor_model.calculate_weight(p))
                 for p in particles
             ]
 
-            # print("Particle weights:", sorted([p.weight for p in particles]))
-
-            self.last_pose = cur_pose
-            self.set_particles(msg.header.stamp, particles)
-            self.last_update_real = rospy.Time.now()
+            self.set_particles(stamp, particles)
+            self.last_update = rospy.Time.now()
         finally:
-            if did_anything:
-                print(
-                    f"Update took {(time.perf_counter() - start_time) * 1000:.2f}ms.\n")
             self.is_updating = False
 
-    def calculate_sensor_weight(self, particle: Particle, save=False, save_name=None) -> float:
-        # I think this is broken
-        # Try debugging by visualizing markers with weight
-        if self.last_lidar is None:
-            return 1.0
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            print(f"Update took {duration_ms:.2f}ms.\n")
 
-        if save:
-            fig, ax = plt.subplots(subplot_kw={'projection': 'polar'})
-            # https://stackoverflow.com/a/18486470
-            ax.set_theta_offset(math.pi/2.0)
-            ax.grid(True)
-            # plt.arrow(0, 0, 0, 1)
-            ax.arrow(0, 0, 0, 1)
-
-        actual_lidar = np.array(self.last_lidar.ranges[:-1])
-
-        # Take map data as cartesian coords
-        # Shift to center at particle
-        # NB: Both the map and all particles are in the `map` frame
-        obstacles_shifted = self.map_obstacles - [particle.x, particle.y]
-
-        # Convert to polar, and descritize to whole angle increments [0-359]
-        rho = np.sqrt(
-            (obstacles_shifted[:, 0] ** 2) + (obstacles_shifted[:, 1] ** 2)
-        )
-        phi_rad = np.arctan2(obstacles_shifted[:, 1], obstacles_shifted[:, 0])
-
-        # Rotate by the particle's heading
-        phi_rad += particle.theta
-
-        # Now convert to degrees
-        # This is the only place we use degrees, but it's helpful since LIDAR is indexed by degree
-        # arctan2(sin(), cos()) normalizes to [-pi, pi]
-        phi = np.rad2deg(np.arctan2(np.sin(phi_rad), np.cos(phi_rad))).round()
-
-        if save:
-            ax.plot(phi_rad, rho, 'b,')
-
-        # Take the minimum at each angle
-        # Indexed like lidar data, where each index is the degree
-        expected_lidar = np.empty(360)
-        expected_lidar[:] = np.NaN
-
-        for phi, rho in zip(phi, rho):
-            # phi is already an integer, just make the type right
-            idx = int(phi)
-
-            # Don't care if we don't have any LIDAR data
-
-            # 10 is (IIRC) the max range of the LIDAR sensor. Anything more than that comes as null
-            # if rho > 10.0:
-            #     continue
-
-            if rho > 3.0:
-                rho = 0.0
-
-            if np.isnan(expected_lidar[idx]) or rho < expected_lidar[idx]:
-                expected_lidar[idx] = rho
-
-        expected_lidar[np.isnan(expected_lidar)] = 0.0  # ???
-        # print(expected_lidar)
-
-        if save:
-            ax.plot(np.deg2rad(np.arange(0, 360)), expected_lidar, 'c.')
-            ax.plot(np.deg2rad(np.arange(0, 360)), actual_lidar, 'r.')
-
-        # print("Calculated Map Polar Data:", expected_lidar)
-
-        # Compare to LIDAR data (don't forget to drop the extra point #360)
-        mask = actual_lidar > 0.0
-        diff_lidar = np.abs(actual_lidar - expected_lidar)
-
-        # if save:
-        #     ax.plot(np.deg2rad(np.arange(0, 360))[
-        #             mask], diff_lidar[mask], 'g.')
-
-        weight = np.sum((1 / diff_lidar[diff_lidar > 0.0]) ** 3)
-
-        if save:
-            ax.set_title(
-                f"({particle.x:.2f}, {particle.y:.2f}; {particle.theta:.2f}; w: {weight:.6f})"
-            )
-            data_dir = Path(__file__).parent.parent / 'particle_sensor_data'
-            data_dir.mkdir(exist_ok=True)
-            fig.savefig(data_dir / f"{save_name}_{weight:010.6f}.png")
-            plt.close(fig)
-
-        return weight
-
-    def preprocess_map(self):
-        rospy.wait_for_service("static_map")
-        static_map = rospy.ServiceProxy("static_map", GetMap)
-        map = static_map().map
-
-        if map.info.origin.orientation.w != 1.0:
-            print("WARNING: Unsupported map with rotated origin.")
-
-        # The coordinates of each occupied grid cell in the map
-        total_occupied = np.sum(np.array(map.data) > 0)
-        occupied = np.zeros((total_occupied, 2))
-        curr = 0
-        for x in range(map.info.width):
-            for y in range(map.info.height):
-                # occupancy grids are stored in row major order
-                ind = x + y*map.info.width
-                if map.data[ind] > 0:
-                    occupied[curr, 0] = (float(x) * map.info.resolution) \
-                        + map.info.origin.position.x
-                    occupied[curr, 1] = (float(y) * map.info.resolution) \
-                        + map.info.origin.position.y
-                    curr += 1
-        self.map_obstacles = occupied
-
-        # poses = PoseArray()
-        # poses.header.stamp = rospy.Time.now()
-        # poses.header.frame_id = 'map'
-        # poses.poses = [
-        #     self.transform_helper.convert_xy_and_theta_to_pose((x, y, 0))
-        #     for x, y in occupied
-        # ]
-        # self.map_pub.publish(poses)
+        return True
 
     def apply_motion(self, particles: List[Particle], delta_pose: PoseTuple, sigma: float) -> List[Particle]:
         # If a particle has a heading of theta
@@ -391,7 +259,6 @@ class ParticleFilter:
         ]
 
     def set_particles(self, stamp: rospy.Time, particles: List[Particle]):
-        self.last_update = stamp
         # self.particles = particles
         self.particles = self.normalize_weights(particles)
 
@@ -422,8 +289,9 @@ class ParticleFilter:
                 self.transform_helper.convert_xy_and_theta_to_pose(
                     (particle.x, particle.y, particle.theta)
                 ))
-            # self.calculate_sensor_weight(
-            #     particle, save=True, save_name=f"particle_{self.update_count:03d}")
+            # self.sensor_model.calculate_weight(particle)
+            # self.sensor_model.save_debug_plot(
+            #     f"particle_{self.update_count:03d}")
         self.update_count += 1
 
         self.particle_pub.publish(poses)
@@ -436,7 +304,7 @@ class ParticleFilter:
         ]
 
     def on_lidar(self, msg: LaserScan):
-        self.last_lidar = msg
+        self.sensor_model.set_lidar_ranges(msg.ranges)
 
     def run(self):
         r = rospy.Rate(5)
