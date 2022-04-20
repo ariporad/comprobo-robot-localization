@@ -40,6 +40,59 @@ def normalize_angle(angle):
     return np.arctan2(np.sin(angle), np.cos(angle))
 
 
+class RandomSampler:
+    stddev: float
+    noise: float
+    noise_range: Optional[Tuple[float, float]]
+
+    def __init__(self, stddev: float, noise: float = 0.0, noise_range: Optional[Tuple[float, float]] = None):
+        self.stddev = stddev
+        self.noise = noise
+
+        if self.noisy and noise_range is None:
+            raise ValueError("Must provide noise_range!")
+
+        self.noise_range = noise_range
+
+    def sample(self, value: float) -> float:
+        if self.noisy and rng.random() < self.noise:
+            return rng.uniform(*self.noise_range)
+        else:
+            return rng.normal(value, self.stddev)
+
+    @property
+    def noisy(self):
+        self.noise != 0.0
+
+
+class RelativeRandomSampler:
+    """ Just like RandomSampler, but stddev, noise, and noise_range are all proportions of the value being sampled. """
+    stddev: float
+    noise: float
+    noise_range: Optional[Tuple[float, float]]
+
+    def __init__(self, stddev: float, noise: float = 0.0, noise_range: Optional[Tuple[float, float]] = None):
+        self.stddev = stddev
+        self.noise = noise
+
+        if self.noisy and noise_range is None:
+            raise ValueError("Must provide noise_range!")
+
+        self.noise_range = noise_range
+
+    def sample(self, value: float) -> float:
+        if self.noisy and rng.random() < self.noise:
+            return rng.uniform(self.noise_range[0] * value, self.noise_range[1] * value)
+        else:
+            sign = signum(value)
+            value_abs = abs(value)
+            return sign * rng.normal(value_abs, self.stddev * value_abs)
+
+    @property
+    def noisy(self):
+        self.noise != 0.0
+
+
 @contextmanager
 def print_time(name: str = "Timer"):
     start = perf_counter()
@@ -55,23 +108,6 @@ def signum(a: float) -> float:
         return -1.0
     else:
         return 0.0
-
-
-def sample_normal(value: float, sigma: float, noise: Optional[float] = None, noise_range: Optional[Tuple[float, float]] = None):
-    if noise is not None and noise_range is not None:
-        if rng.random() < noise:
-            return rng.uniform(*noise_range)
-    return rng.normal(value, sigma)
-
-
-def sample_normal_error(value: float, sigma: float):
-    """
-    Helper: Equivalent to normal(value, value * sigma), but properly handles negatives.
-    """
-
-    sign = signum(value)
-    value_abs = abs(value)
-    return sign * rng.normal(value_abs, value_abs * sigma)
 
 
 class TFHelper(object):

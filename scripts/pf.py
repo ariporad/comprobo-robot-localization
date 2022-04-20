@@ -25,7 +25,7 @@ from tf.transformations import euler_from_quaternion
 import numpy as np
 from numpy.random import default_rng, Generator
 
-from helper_functions import TFHelper, print_time, sample_normal, sample_normal_error, PoseTuple, Particle
+from helper_functions import TFHelper,  PoseTuple, Particle, RandomSampler, RelativeRandomSampler
 from sensor_model import SensorModel
 from occupancy_field import OccupancyField
 
@@ -71,11 +71,10 @@ class ParticleFilter:
     The class that represents a Particle Filter ROS Node
     """
 
-    INITIAL_STATE_XY_SIGMA = 0.25
-    INITIAL_STATE_XY_NOISE = 0.01
+    particle_sampler_xy = RandomSampler(0.25, 0.1, (-5, 5))
+    particle_sampler_theta = RandomSampler(0.15 * math.pi, 0)
 
-    INITIAL_STATE_THETA_SIGMA = 0.15 * math.pi
-    INITIAL_STATE_THETA_NOISE = 0.00
+    motion_error_sampler = RelativeRandomSampler(.15)
 
     NUM_PARTICLES = 300
 
@@ -133,9 +132,7 @@ class ParticleFilter:
         x, y, theta = self.transform_helper.convert_pose_to_xy_and_theta(
             msg.pose.pose)
 
-        particles = self.sample_particles(
-            [Particle(x, y, theta, 1)],
-            self.INITIAL_STATE_XY_SIGMA, self.INITIAL_STATE_XY_NOISE, self.INITIAL_STATE_THETA_SIGMA, self.INITIAL_STATE_THETA_NOISE, self.NUM_PARTICLES)
+        particles = self.sample_particles([Particle(x, y, theta, 1)])
 
         self.set_particles(msg.header.stamp, particles)
 
@@ -180,13 +177,11 @@ class ParticleFilter:
         start_time = time.perf_counter()
         try:
             # Resample Particles
-            particles = self.sample_particles(
-                self.particles,
-                self.INITIAL_STATE_XY_SIGMA, self.INITIAL_STATE_XY_NOISE, self.INITIAL_STATE_THETA_SIGMA, self.INITIAL_STATE_THETA_NOISE, self.NUM_PARTICLES)
+            particles = self.sample_particles(self.particles)
             # particles = list(self.particles)
 
             # Apply Motion
-            particles = self.apply_motion(particles, delta_pose, 0.15)
+            particles = self.apply_motion(particles, delta_pose)
 
             particles = [
                 Particle(p.x, p.y, p.theta,
@@ -205,19 +200,9 @@ class ParticleFilter:
         return True
 
     def apply_motion(self, particles: List[Particle], delta_pose: PoseTuple, sigma: float) -> List[Particle]:
-        # If a particle has a heading of theta
-        # ihat(t-1) = [cos(theta), sin(theta)]
-        # jhat(t-1) = [-sin(theta), cos(theta)]
-        # x(t) = ihat(t) * delta.x + jhat(t)
-
-        # print(
-        #     f"delta_pose.x={delta_pose.x}, delta_pose.y={delta_pose.y}, delta_pose.theta={delta_pose.theta}")
-
-        dx_robot = sample_normal_error(delta_pose.x, sigma)
-        dy_robot = sample_normal_error(delta_pose.y, sigma)
-        dtheta = sample_normal_error(delta_pose.theta, sigma)
-
-        # print(f"dx_r={dx_robot}, dy_r={dy_robot}, dtheta={dtheta}")
+        dx_robot = self.motion_error_sampler.sample(delta_pose.x)
+        dy_robot = self.motion_error_sampler.sample(delta_pose.y)
+        dtheta = self.motion_error_sampler.sample(delta_pose.theta)
 
         rot_dtheta = np.array([
             [np.cos(dtheta), -np.sin(dtheta)],
@@ -236,23 +221,21 @@ class ParticleFilter:
             for p in particles
         ]
 
-    def sample_particles(self, particles: List[Particle], xy_sigma: float, xy_noise: float, theta_sigma: float, theta_noise: float, k: int) -> List[Particle]:
-        weights = [p.weight for p in particles]
-        # print("WEIGHTS:", sorted(weights))
+    def sample_particles(self, particles: List[Particle], k: int = None) -> List[Particle]:
+        if k is None:
+            k = self.NUM_PARTICLES
+
         choices = random.choices(
             particles,
-            weights=weights,
+            weights=[p.weight for p in particles],
             k=k
         )
 
         return [
             Particle(
-                x=sample_normal(choice.x, xy_sigma, xy_noise,
-                                (choice.x - 5, choice.x + 5)),
-                y=sample_normal(choice.y, xy_sigma, xy_noise,
-                                (choice.y - 5, choice.y + 5)),
-                theta=sample_normal(choice.theta, theta_sigma,
-                                    theta_noise, (-math.pi, math.pi)),
+                x=self.particle_sampler_xy.sample(choice.x),
+                y=self.particle_sampler_xy.sample(choice.y),
+                theta=self.particle_sampler_theta.sample(choice.theta),
                 weight=1
             )
             for choice in choices
