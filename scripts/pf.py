@@ -21,16 +21,16 @@ from helper_functions import TFHelper,  PoseTuple, Particle, RandomSampler, prin
 
 
 class ParticleFilter:
-    DEBUG_SAVE_SENSOR_STATE_PLOTS = 0
+    DEBUG_SAVE_SENSOR_STATE_PLOTS = 15
 
     NUM_PARTICLES = 300
 
     particle_sampler_xy = RandomSampler(0.15, 0.0, (-5, 5))
-    particle_sampler_theta = RandomSampler(0.05 * math.pi, 0)
+    particle_sampler_theta = RandomSampler(0.15 * math.pi, 0.00)
 
     motion_model = MotionModel(stddev=.15)
-    sensor_model: SensorModel = OccupancyFieldSensorModel()
-    # sensor_model: SensorModel = RayTracingSensorModel()
+    # sensor_model: SensorModel = OccupancyFieldSensorModel()
+    sensor_model: SensorModel = RayTracingSensorModel()
 
     # Don't update unless we've moved a bit
     UPDATE_MIN_DISTANCE: float = 0.05
@@ -156,6 +156,7 @@ class ParticleFilter:
         try:
             with print_time('Updating'):
                 # Resample Particles
+                # particles = list(self.particles)
                 particles = self.resample_particles(self.particles)
 
                 # Apply Motion Model

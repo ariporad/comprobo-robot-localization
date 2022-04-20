@@ -18,14 +18,17 @@ class MotionModel:
         dy_robot = self.error_sampler.sample(delta_pose.y)
         dtheta = self.error_sampler.sample(delta_pose.theta)
 
-        dx, dy = np.matmul(rotation_matrix(dtheta), [dx_robot, dy_robot])
+        new_particles = []
+        for p in particles:
+            dx, dy = np.matmul(rotation_matrix(p.theta), [dx_robot, dy_robot])
 
-        return [
-            Particle(
-                x=p.x + dx,
-                y=p.y + dy,
-                theta=p.theta - dtheta,
-                weight=p.weight
+            new_particles.append(
+                Particle(
+                    x=p.x - dx,
+                    y=p.y - dy,
+                    theta=p.theta - dtheta,
+                    weight=p.weight
+                )
             )
-            for p in particles
-        ]
+
+        return new_particles
