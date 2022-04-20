@@ -26,7 +26,7 @@ class ParticleFilter:
     NUM_PARTICLES = 300
 
     particle_sampler_xy = RandomSampler(0.15, 0.0, (-5, 5))
-    particle_sampler_theta = RandomSampler(0.15 * math.pi, 0)
+    particle_sampler_theta = RandomSampler(0.05 * math.pi, 0)
 
     motion_model = MotionModel(stddev=.15)
     sensor_model: SensorModel = OccupancyFieldSensorModel()
@@ -34,7 +34,7 @@ class ParticleFilter:
 
     # Don't update unless we've moved a bit
     UPDATE_MIN_DISTANCE: float = 0.05
-    UPDATE_MIN_ROTATION: float = 0.1
+    UPDATE_MIN_ROTATION: float = 0.1 * math.pi
 
     last_pose: PoseTuple = None
 

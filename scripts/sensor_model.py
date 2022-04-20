@@ -54,9 +54,9 @@ class OccupancyFieldSensorModel(SensorModel):
         expected_distance = self.occupancy_field.get_closest_obstacle_distance(
             particle.x, particle.y
         )
-        return 1 / abs(
+        return (1 / abs(
             (self.closest_obstacle - expected_distance) / self.closest_obstacle
-        )
+        )) ** 2
 
     def set_map(self, map: OccupancyGrid):
         # OccupancyField gets the map itself, do nothing
