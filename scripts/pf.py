@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 
-""" This is the starter code for the robot localization project """
-
 from collections import namedtuple
 from itertools import islice
 
@@ -34,9 +32,7 @@ rng: Generator = default_rng()
 
 
 class ParticleFilter:
-    """
-    The class that represents a Particle Filter ROS Node
-    """
+    NUM_PARTICLES = 300
 
     particle_sampler_xy = RandomSampler(0.25, 0.1, (-5, 5))
     particle_sampler_theta = RandomSampler(0.15 * math.pi, 0)
@@ -44,38 +40,37 @@ class ParticleFilter:
     motion_model = MotionModel(stddev=.15)
     sensor_model = SensorModel()
 
-    NUM_PARTICLES = 300
-
-    sensor_model: SensorModel
-
-    particles: List[Particle] = None
-    robot_pose: PoseStamped = None
+    # Don't update unless we've moved a bit
+    UPDATE_MIN_DISTANCE: float = 0.01
+    UPDATE_MIN_ROTATION: float = 0.05
 
     last_pose: PoseTuple = None
 
-    map_obstacles: np.array
-    tf_listener: tf2_ros.TransformListener
+    particles: List[Particle] = None
+    particles_stamp: rospy.Time
+    """ Timestamp of the odometry update that generated the current particles. """
 
+    update_count: int = 0
     is_updating: bool = False
+    last_update: rospy.Time
+    """ Timestamp at which the last update *finished.* """
+
+    particle_pub: rospy.Publisher
+
+    tf_listener: tf2_ros.TransformListener
+    tf_buf: tf2_ros.Buffer
+    transform_helper: TFHelper = TFHelper()
 
     def __init__(self):
         rospy.init_node('pf')
+
         self.last_update = rospy.Time.now()
         self.particles_stamp = rospy.Time.now()
 
-        self.update_count = 0
-
-        # create instances of two helper objects that are provided to you
-        # as part of the project
-        self.occupancy_field = OccupancyField()  # NOTE: hangs if a map isn't published
-        self.transform_helper = TFHelper()
         self.tf_buf = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buf)
 
         # publisher for the particle cloud for visualizing in rviz.
-        self.map_pub = rospy.Publisher("parsed_map",
-                                       PoseArray,
-                                       queue_size=10)
         self.particle_pub = rospy.Publisher("particlecloud",
                                             PoseArray,
                                             queue_size=10)
@@ -124,7 +119,8 @@ class ParticleFilter:
         )
 
         # Make sure we've moved at least a bit
-        if math.sqrt((delta_pose[0] ** 2) + (delta_pose[1] ** 2)) < 0.01 and delta_pose[2] < 0.05:
+        if math.sqrt((delta_pose[0] ** 2) + (delta_pose[1] ** 2)) < self.update_min_distance \
+                and delta_pose[2] < self.update_min_rotation:
             return
 
         if self.update(msg.header.stamp, delta_pose):
@@ -189,6 +185,7 @@ class ParticleFilter:
         ]
 
     def set_particles(self, stamp: rospy.Time, particles: List[Particle]):
+        """ Save a new set of particles, including updating the computed reference frame. """
         self.particles = self.normalize_weights(particles)
         self.particles_stamp = stamp
 
@@ -203,7 +200,10 @@ class ParticleFilter:
             self.transform_helper.convert_xy_and_theta_to_pose(robot_pose)
         )
 
+        self.visualize_particles()
+
     def visualize_particles(self):
+        """ Publish particles for viewing in Rviz. """
         # Publish particles
         poses = PoseArray()
         poses.header.stamp = self.particles_stamp
