@@ -3,6 +3,7 @@
 
 from time import perf_counter
 import rospy
+from typing import Optional, Tuple
 
 from std_msgs.msg import Header
 from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
@@ -36,6 +37,13 @@ def signum(a: float) -> float:
         return -1.0
     else:
         return 0.0
+
+
+def sample_normal(value: float, sigma: float, noise: Optional[float] = None, noise_range: Optional[Tuple[float, float]] = None):
+    if noise is not None and noise_range is not None:
+        if rng.random() < noise:
+            return rng.uniform(*noise_range)
+    return rng.normal(value, sigma)
 
 
 def sample_normal_error(value: float, sigma: float):

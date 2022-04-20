@@ -3,7 +3,11 @@
 """ This is the starter code for the robot localization project """
 
 from collections import namedtuple
+from itertools import islice
 
+import matplotlib.pyplot as plt
+
+from pathlib import Path
 import math
 import time
 from typing import Iterable, Optional, Tuple, List
@@ -21,7 +25,7 @@ from tf.transformations import euler_from_quaternion
 import numpy as np
 from numpy.random import default_rng, Generator
 
-from helper_functions import TFHelper, print_time, sample_normal_error
+from helper_functions import TFHelper, print_time, sample_normal, sample_normal_error
 from occupancy_field import OccupancyField
 
 # NB: All particles are in the `map` frame
@@ -77,13 +81,13 @@ class ParticleFilter:
     The class that represents a Particle Filter ROS Node
     """
 
-    INITIAL_STATE_XY_SIGMA = 0.10
-    INITIAL_STATE_XY_NOISE = 0.15
+    INITIAL_STATE_XY_SIGMA = 0.25
+    INITIAL_STATE_XY_NOISE = 0.01
 
-    INITIAL_STATE_THETA_SIGMA = math.pi / 20
-    INITIAL_STATE_THETA_NOISE = 0.05
+    INITIAL_STATE_THETA_SIGMA = 0.15 * math.pi
+    INITIAL_STATE_THETA_NOISE = 0.15
 
-    NUM_PARTICLES = 300
+    NUM_PARTICLES = 100
 
     particles: List[Particle] = None
     robot_pose: PoseStamped = None
@@ -100,6 +104,8 @@ class ParticleFilter:
         rospy.init_node('pf')
         self.last_update = rospy.Time.now()
         self.last_update_real = rospy.Time.now()
+
+        self.update_count = 0
 
         # create instances of two helper objects that are provided to you
         # as part of the project
@@ -197,7 +203,7 @@ class ParticleFilter:
                 for p in particles
             ]
 
-            print("Particle weights:", sorted([p.weight for p in particles]))
+            # print("Particle weights:", sorted([p.weight for p in particles]))
 
             self.last_pose = cur_pose
             self.set_particles(msg.header.stamp, particles)
@@ -208,11 +214,19 @@ class ParticleFilter:
                     f"Update took {(time.perf_counter() - start_time) * 1000:.2f}ms.\n")
             self.is_updating = False
 
-    def calculate_sensor_weight(self, particle: Particle) -> float:
+    def calculate_sensor_weight(self, particle: Particle, save=False, save_name=None) -> float:
         # I think this is broken
         # Try debugging by visualizing markers with weight
         if self.last_lidar is None:
             return 1.0
+
+        if save:
+            fig, ax = plt.subplots(subplot_kw={'projection': 'polar'})
+            # https://stackoverflow.com/a/18486470
+            ax.set_theta_offset(math.pi/2.0)
+            ax.grid(True)
+            # plt.arrow(0, 0, 0, 1)
+            ax.arrow(0, 0, 0, 1)
 
         actual_lidar = np.array(self.last_lidar.ranges[:-1])
 
@@ -235,6 +249,9 @@ class ParticleFilter:
         # arctan2(sin(), cos()) normalizes to [-pi, pi]
         phi = np.rad2deg(np.arctan2(np.sin(phi_rad), np.cos(phi_rad))).round()
 
+        if save:
+            ax.plot(phi_rad, rho, 'b,')
+
         # Take the minimum at each angle
         # Indexed like lidar data, where each index is the degree
         expected_lidar = np.zeros(360)
@@ -250,22 +267,30 @@ class ParticleFilter:
             if expected_lidar[idx] == 0.0 or rho < expected_lidar[idx]:
                 expected_lidar[idx] = rho
 
+        if save:
+            ax.plot(np.deg2rad(np.arange(0, 360)), expected_lidar, 'c.')
+            ax.plot(np.deg2rad(np.arange(0, 360)), actual_lidar, 'r.')
+
         # print("Calculated Map Polar Data:", expected_lidar)
 
         # Compare to LIDAR data (don't forget to drop the extra point #360)
         mask = actual_lidar > 0.0
-        diff_lidar = np.abs(actual_lidar - expected_lidar)[mask]
-        total_diff = np.sum(diff_lidar)
+        diff_lidar = np.abs((actual_lidar - expected_lidar) / actual_lidar)
 
-        weight = np.sum((diff_lidar / 10) ** 3)
+        if save:
+            ax.plot(np.deg2rad(np.arange(0, 360))[
+                    mask], diff_lidar[mask], 'g.')
 
-        # _debug = np.zeros((360, 3))
+        weight = np.sum((1 / diff_lidar[mask]) ** 3)
 
-        # _debug[:, 0] = expected_lidar
-        # _debug[:, 1] = actual_lidar
-        # _debug[:, 2] = diff_lidar
-
-        # print(_debug)
+        if save:
+            ax.set_title(
+                f"({particle.x:.2f}, {particle.y:.2f}; {particle.theta:.2f}; w: {weight:.6f})"
+            )
+            data_dir = Path(__file__).parent.parent / 'particle_sensor_data'
+            data_dir.mkdir(exist_ok=True)
+            fig.savefig(data_dir / f"{save_name}_{weight:010.6f}.png")
+            plt.close(fig)
 
         return weight
 
@@ -335,17 +360,22 @@ class ParticleFilter:
         ]
 
     def sample_particles(self, particles: List[Particle], xy_sigma: float, xy_noise: float, theta_sigma: float, theta_noise: float, k: int) -> List[Particle]:
+        weights = [p.weight for p in particles]
+        # print("WEIGHTS:", sorted(weights))
         choices = random.choices(
             particles,
-            weights=[p.weight * 1000 for p in particles],
+            weights=weights,
             k=k
         )
 
         return [
             Particle(
-                x=rng.normal(choice.x, xy_sigma),
-                y=rng.normal(choice.y, xy_sigma),
-                theta=rng.normal(choice.theta, theta_sigma),
+                x=sample_normal(choice.x, xy_sigma, xy_noise,
+                                (choice.x - 5, choice.x + 5)),
+                y=sample_normal(choice.y, xy_sigma, xy_noise,
+                                (choice.y - 5, choice.y + 5)),
+                theta=sample_normal(choice.theta, theta_sigma,
+                                    theta_noise, (-math.pi, math.pi)),
                 weight=1
             )
             for choice in choices
@@ -353,6 +383,7 @@ class ParticleFilter:
 
     def set_particles(self, stamp: rospy.Time, particles: List[Particle]):
         self.last_update = stamp
+        # self.particles = particles
         self.particles = self.normalize_weights(particles)
 
         # if self.tf_buf.can_transform('base_link', 'odom', stamp, rospy.Duration(1)) or True:
@@ -373,12 +404,19 @@ class ParticleFilter:
         poses = PoseArray()
         poses.header.stamp = stamp
         poses.header.frame_id = 'map'
-        poses.poses = [
-            self.transform_helper.convert_xy_and_theta_to_pose(
-                (particle.x, particle.y, particle.theta))
-            for particle in sorted(self.particles, key=lambda p: p.weight)
-            # for particle in self.particles
-        ][-20:]
+
+        particles = list(
+            sorted(list(random.choices(self.particles, k=30)), key=lambda p: p.weight))
+        for i, particle in enumerate(particles):
+            # for particle in self.particles:
+            poses.poses.append(
+                self.transform_helper.convert_xy_and_theta_to_pose(
+                    (particle.x, particle.y, particle.theta)
+                ))
+            self.calculate_sensor_weight(
+                particle, save=True, save_name=f"particle_{self.update_count:03d}")
+        self.update_count += 1
+
         self.particle_pub.publish(poses)
 
     def normalize_weights(self, particles: List[Particle]):
