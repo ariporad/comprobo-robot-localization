@@ -1,34 +1,23 @@
 #!/usr/bin/env python3
 
-from collections import namedtuple
-from itertools import islice
-
-import matplotlib.pyplot as plt
-
-from pathlib import Path
 import math
-import time
-from typing import Iterable, Optional, Tuple, List
 import rospy
 import random
-from nav_msgs.msg import Odometry
-from nav_msgs.srv import GetMap
-from motion_model import MotionModel
-from std_msgs.msg import Header
-from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, PoseStamped, Pose
-import tf2_ros
-import tf2_geometry_msgs
-from tf.transformations import euler_from_quaternion
 
 import numpy as np
-from numpy.random import default_rng, Generator
+from typing import List
 
-from helper_functions import TFHelper,  PoseTuple, Particle, RandomSampler, RelativeRandomSampler, print_time
+import tf2_ros
+import tf2_geometry_msgs  # Importing for side-effects
+from nav_msgs.msg import Odometry
+from nav_msgs.srv import GetMap
+from sensor_msgs.msg import LaserScan
+from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray
+
 from sensor_model import SensorModel
-from occupancy_field import OccupancyField
+from motion_model import MotionModel
 
-rng: Generator = default_rng()
+from helper_functions import TFHelper,  PoseTuple, Particle, RandomSampler, print_time
 
 
 class ParticleFilter:
@@ -90,20 +79,20 @@ class ParticleFilter:
         rospy.Subscriber("stable_scan", LaserScan, self.on_lidar)
 
     def on_initial_pose(self, msg: PoseWithCovarianceStamped):
-        """ Callback function to handle re-initializing the particle filter
-            based on a pose estimate.  These pose estimates could be generated
-            by another ROS Node or could come from the rviz GUI """
-        x, y, theta = self.transform_helper.convert_pose_to_xy_and_theta(
-            msg.pose.pose)
+        """ Callback to (re-)initialize the particle filter whenever an initial pose is set. """
+        x, y, theta = \
+            self.transform_helper.convert_pose_to_xy_and_theta(msg.pose.pose)
 
         particles = self.resample_particles([Particle(x, y, theta, 1)])
 
         self.set_particles(msg.header.stamp, particles)
 
     def on_lidar(self, msg: LaserScan):
+        """ Callback whenever new LIDAR data is available. """
         self.sensor_model.set_lidar_ranges(msg.ranges)
 
     def on_odom(self, msg: Odometry):
+        """ Callback whenever new odometry data is available. """
         pose = PoseTuple(
             *self.transform_helper.convert_pose_to_xy_and_theta(msg.pose.pose))
 
@@ -127,6 +116,26 @@ class ParticleFilter:
             self.last_pose = pose
 
     def update(self, stamp: rospy.Time, delta_pose: PoseTuple) -> bool:
+        """
+        Re-run the particle filter with new odometry data. Uses the most recent LIDAR data.
+
+        Arguments:
+            stamp: the time stamp of the most recent odometry data
+            delta_pose: the change between the most recent odometry data and the odometry data
+                        _at the time of the last successful update._
+
+        Note: The caller of this method needs to keep track of the change in odometry pose over time,
+              and reset it whenever this method returns True.
+
+        Steps:
+        1. Resample particles
+        2. Apply motion model
+        3. Re-weight based on sensor model
+
+        Calling this method may or may not trigger an update (depending on: if an update is already
+        in progress, if the initial pose/particles haven't been set yet, and if this odometry data
+        is out of date). Returns True if an update actually happened, or false otherwise.
+        """
         # Ignore any updates that happened while we were working on the last update (allows queue to drain)
         if stamp < self.last_update:
             return False
@@ -157,7 +166,6 @@ class ParticleFilter:
 
                 # Set Particles
                 self.set_particles(stamp, particles)
-
                 self.last_update = rospy.Time.now()
         finally:
             self.is_updating = False
@@ -165,6 +173,15 @@ class ParticleFilter:
         return True
 
     def resample_particles(self, particles: List[Particle], k: int = None) -> List[Particle]:
+        """
+        Resample particles using a weighted random sample.
+
+        All returned particles have an equal weight (1). `k` particles are returned, which defaults
+        to self.NUM_PARTICLES.
+
+        This is a pure method (doesn't mutate anything, returns new particles).
+        """
+
         if k is None:
             k = self.NUM_PARTICLES
 
@@ -224,7 +241,12 @@ class ParticleFilter:
         #     #     f"particle_{self.update_count:03d}")
         #     self.update_count += 1
 
-    def normalize_weights(self, particles: List[Particle]):
+    def normalize_weights(self, particles: List[Particle]) -> List[Particle]:
+        """
+        Normalize the weights of the particles (so the all add to 1).
+
+        This is a pure method (doesn't mutate anything, returns new particles).
+        """
         total = sum(p.weight for p in particles)
         return [
             Particle(p.x, p.y, p.theta, p.weight / total)

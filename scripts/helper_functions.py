@@ -1,31 +1,35 @@
-""" Some convenience functions for translating between various representations
-    of a robot pose. """
+"""
+Miscellanious helper functions.
+
+Some have been added or modified substantially from the starter code.
+"""
+import math
+import rospy
+import tf2_ros
+
+import numpy as np
+import tf.transformations as t
 
 from time import perf_counter
-import rospy
+from collections import namedtuple
 from typing import Optional, Tuple
+from numpy.random import default_rng
+from contextlib import contextmanager
+from tf import TransformListener, TransformBroadcaster
 
 from std_msgs.msg import Header
 from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
 
-import tf.transformations as t
-import tf2_ros
-from tf import TransformListener
-from tf import TransformBroadcaster
-
-import numpy as np
-from numpy.random import default_rng, Generator
-
-import math
-from contextlib import contextmanager
-from collections import namedtuple
-
 rng = default_rng()
-
-# NB: All particles are in the `map` frame
 
 
 class Particle(namedtuple('Particle', ['x', 'y', 'theta', 'weight'])):
+    """
+    A Particle.
+
+    NOTE: All particles exist in the `map` frame, unless otherwise clearly indicated.
+    """
+
     def __repr__(self):
         return f"Particle(x={self.x:.3f}, y={self.y:.3f}, theta={self.theta:.3f}, w={self.weight:.6f})"
 
@@ -41,6 +45,8 @@ def normalize_angle(angle):
 
 
 class RandomSampler:
+    """ Helper class for random sampling.  """
+
     stddev: float
     noise: float
     noise_range: Optional[Tuple[float, float]]
@@ -94,6 +100,7 @@ class RelativeRandomSampler:
 
 
 def rotation_matrix(angle: float) -> np.array:
+    """ Generate a rotation matrix. """
     return np.array([
         [np.cos(angle), -np.sin(angle)],
         [np.sin(angle), np.cos(angle)]
@@ -102,6 +109,7 @@ def rotation_matrix(angle: float) -> np.array:
 
 @contextmanager
 def print_time(name: str = "Timer"):
+    """ Time a block of code, then print how long it took. """
     start = perf_counter()
     yield
     duration = perf_counter() - start
@@ -109,6 +117,8 @@ def print_time(name: str = "Timer"):
 
 
 def signum(a: float) -> float:
+    """ Return the sign of a number (ie. -1, 1, or 0). """
+
     if a > 0.0:
         return 1.0
     elif a < 0.0:
@@ -213,20 +223,9 @@ class TFHelper(object):
                                           rospy.Duration(0.2))
         self.odom_to_map = self.tf_listener.transformPose(
             'odom', pose_map_in_bl)
-        # self.odom_to_map = self.tf_buf.transform(
-        #     pose_map_in_bl, 'odom', rospy.Duration(0.25))
-        # self.odom_to_map = self.tf_listener.transformPose(
-        #     'odom', pose_map_in_bl)
+
         (self.translation, self.rotation) = \
             self.convert_pose_inverse_transform(self.odom_to_map.pose)
-
-        # self.translation = [
-        #     self.translation[0],
-        #     self.translation[1] * -1,
-        #     self.translation[2],
-        # ]
-
-        # print("updated map ref frame:", self.translation, self.rotation)
 
     def send_last_map_to_odom_transform(self):
         if not(hasattr(self, 'translation') and hasattr(self, 'rotation')):

@@ -1,33 +1,13 @@
-
-from collections import namedtuple
-from itertools import islice
-
-import matplotlib.pyplot as plt
-
-from pathlib import Path
-import math
-import time
-from typing import Iterable, Optional, Tuple, List
-import rospy
-import random
-from nav_msgs.msg import Odometry
-from nav_msgs.srv import GetMap
-from std_msgs.msg import Header
-from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, PoseStamped, Pose
-import tf2_ros
-import tf2_geometry_msgs
-from tf.transformations import euler_from_quaternion
-
 import numpy as np
-from numpy.random import default_rng, Generator
 
-from helper_functions import TFHelper,  PoseTuple, Particle, RandomSampler, rotation_matrix, RelativeRandomSampler, print_time
-from sensor_model import SensorModel
-from occupancy_field import OccupancyField
+from typing import List
+from helper_functions import PoseTuple, Particle, rotation_matrix, RelativeRandomSampler
 
 
 class MotionModel:
+    """
+    A fairly simple motion model, which simply takes odometry data and adds some random error.
+    """
     error_sampler: RelativeRandomSampler
 
     def __init__(self, stddev: float):

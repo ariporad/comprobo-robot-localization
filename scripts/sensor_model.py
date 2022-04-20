@@ -1,43 +1,46 @@
-from helper_functions import Particle, PoseTuple, normalize_angle
-from collections import namedtuple
-from itertools import islice
-
+import math
+import numpy as np
 import matplotlib.pyplot as plt
 
 from pathlib import Path
-import math
-import time
-from typing import Iterable, Optional, Tuple, List
-import rospy
-import random
-from nav_msgs.msg import Odometry, OccupancyGrid
-from nav_msgs.srv import GetMap
-from std_msgs.msg import Header
-from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, PoseStamped, Pose
-import tf2_ros
-import tf2_geometry_msgs
-from tf.transformations import euler_from_quaternion
+from typing import Optional
 
-import numpy as np
-from numpy.random import default_rng, Generator
-
-from helper_functions import TFHelper, print_time, sample_normal, sample_normal_error
-from occupancy_field import OccupancyField
+from nav_msgs.msg import OccupancyGrid
+from helper_functions import Particle, normalize_angle
 
 
 class SensorModel:
-    lidar_actual: Optional[np.array] = None
+    last_lidar: Optional[np.array] = None
+    """ Most recent LIDAR data. """
+
     map_obstacles: Optional[np.array] = None
+    """ (n, 2)-sized matrix of x, y coordinates of occupied squares (ie. obstacles) on the map. """
+
+    debug_data_dir: Path
+    """ Folder to store debugging images (see save_debug_plot). Defaults to __file__/../particle_sensor_data. """
 
     def set_map(self, map: OccupancyGrid):
+        """ Set the map. """
         self.map_obstacles = self.preprocess_map(map)
 
-    def set_lidar_ranges(self, ranges: list):
-        self.lidar_actual = np.array(ranges[0:360])
+    def set_lidar(self, ranges: list):
+        """ Notify the model of new LIDAR data. """
+        self.last_lidar = np.array(ranges[0:360])
+
+    def __init__(self, debug_data_dir: Path = Path(__file__).parent.parent / 'particle_sensor_data'):
+        self.debug_data_dir = debug_data_dir
+        self.debug_data_dir.mkdir(exist_ok=True)
 
     # KLUDGE: All local state is stored as instance variables to easily separate graphing
     def calculate_weight(self, particle: Particle) -> float:
+        """
+        Use the sensor model to figure out how likely it is that the robot was at the particle given
+        the most recent LIDAR data.
+
+        Think of this as a pure method, although it isn't actually: it stores all internal state as
+        instance variables on the model class. This enables you to call save_debug_plot immediately
+        afterwards to get a pretty graph showing the internal state of the model.
+        """
         self.particle = particle
 
         # Take map data as cartesian coords
@@ -79,7 +82,7 @@ class SensorModel:
                 self.lidar_expected[idx] = r
 
         # Compare to LIDAR data
-        self.lidar_diff = np.abs(self.lidar_actual - self.lidar_expected)
+        self.lidar_diff = np.abs(self.last_lidar - self.lidar_expected)
 
         # Calculate weight
         self.weight = np.sum((1 / self.lidar_diff[self.lidar_diff > 0.0]) ** 3)
@@ -87,6 +90,10 @@ class SensorModel:
         return self.weight
 
     def save_debug_plot(self, name: str):
+        """
+        Call this method right after calculate_weight to save (to disk) a graph showing the internal
+        state of the model, for debugging purposes. This is quite slow.
+        """
         fig, ax = plt.subplots(subplot_kw={'projection': 'polar'})
         # https://stackoverflow.com/a/18486470
         ax.set_theta_offset(math.pi/2.0)
@@ -94,33 +101,44 @@ class SensorModel:
         ax.arrow(0, 0, 0, 1)
         ax.plot(self.obstacle_thetas_rad, self.obstacle_rs, 'b,')
         ax.plot(np.deg2rad(np.arange(0, 360)), self.lidar_expected, 'c.')
-        ax.plot(np.deg2rad(np.arange(0, 360)), self.lidar_actual, 'r.')
+        ax.plot(np.deg2rad(np.arange(0, 360)), self.last_lidar, 'r.')
         ax.set_title(
             f"({self.particle.x:.2f}, {self.particle.y:.2f}; {self.particle.theta:.2f}; w: {self.weight:.6f})"
         )
-        data_dir = Path(__file__).parent.parent / \
-            'particle_sensor_data'
-        data_dir.mkdir(exist_ok=True)
-        fig.savefig(data_dir / f"{name}_{self.weight:010.6f}.png")
+        fig.savefig(self.debug_data_dir / f"{name}_{self.weight:010.6f}.png")
         plt.close(fig)
 
     @staticmethod
     def preprocess_map(map: OccupancyGrid) -> np.array:
+        """
+        Convert a map from a ROS OccupancyGrid to the x/y coordinate format this model uses.
+
+        Only do this once per map, then pass it to set_map.
+
+        OccupancyGrids store their data in a giant array in row-major order. Each point is in the
+        range [0, 100], where 100 is "very occupied" and 0 is "unoccupied." -1 represents unknown.
+        All points in our testing maps are either 0, 100, or -1.
+        """
+
         if map.info.origin.orientation.w != 1.0:
             raise ValueError("Unsupported map with rotated origin.")
 
-        # The coordinates of each occupied grid cell in the map
+        # Number of obstacle points to deal with
         total_occupied = np.sum(np.array(map.data) > 0)
+
+        # The coordinates of each occupied grid cell in the map
         occupied = np.zeros((total_occupied, 2))
+
         curr = 0
         for x in range(map.info.width):
             for y in range(map.info.height):
-                # occupancy grids are stored in row major order
-                ind = x + y*map.info.width
+                # Occupancy grids are stored in row major order
+                ind = x + (y * map.info.width)
                 if map.data[ind] > 0:
                     occupied[curr, 0] = (float(x) * map.info.resolution) \
                         + map.info.origin.position.x
                     occupied[curr, 1] = (float(y) * map.info.resolution) \
                         + map.info.origin.position.y
                     curr += 1
+
         return occupied
