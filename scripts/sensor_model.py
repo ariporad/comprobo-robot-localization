@@ -4,15 +4,71 @@ import matplotlib.pyplot as plt
 
 from pathlib import Path
 from typing import Optional
+from abc import ABC, abstractmethod
 
 from nav_msgs.msg import OccupancyGrid
+from occupancy_field import OccupancyField
 from helper_functions import Particle, normalize_angle
 
 
-class SensorModel:
+class SensorModel(ABC):
     last_lidar: Optional[np.array] = None
     """ Most recent LIDAR data. """
 
+    def set_lidar(self, ranges: list):
+        """ Notify the model of new LIDAR data. """
+        self.last_lidar = np.array(ranges[0:360])
+
+    @abstractmethod
+    def set_map(self, map: OccupancyGrid):
+        pass
+
+    @abstractmethod
+    def calculate_weight(self, particle: Particle) -> float:
+        pass
+
+    @abstractmethod
+    def save_debug_plot(self, name: str):
+        pass
+
+
+class OccupancyFieldSensorModel(SensorModel):
+    """ A sensor model based on an occupancy field. """
+
+    occupancy_field: OccupancyField
+
+    closest_obstacle: float = 0.0
+    """ Distance to closest obstacle in most recent LIDAR data. """
+
+    def __init__(self):
+        self.occupancy_field = OccupancyField()
+
+    def set_lidar(self, ranges: list):
+        """ Notify the model of new LIDAR data. """
+        super().set_lidar(ranges)
+
+        ranges = np.array(ranges)
+        self.closest_obstacle = np.min(ranges[ranges > 0])
+
+    def calculate_weight(self, particle: Particle) -> float:
+        expected_distance = self.occupancy_field.get_closest_obstacle_distance(
+            particle.x, particle.y
+        )
+        return 1 / abs(
+            (self.closest_obstacle - expected_distance) / self.closest_obstacle
+        )
+
+    def set_map(self, map: OccupancyGrid):
+        # OccupancyField gets the map itself, do nothing
+        pass
+
+    def save_debug_plot(self, name: str):
+        # Not supported
+        pass
+
+
+class RayTracingSensorModel(SensorModel):
+    """ A sensor model based on pseudo-ray tracing. """
     map_obstacles: Optional[np.array] = None
     """ (n, 2)-sized matrix of x, y coordinates of occupied squares (ie. obstacles) on the map. """
 
@@ -23,15 +79,10 @@ class SensorModel:
         """ Set the map. """
         self.map_obstacles = self.preprocess_map(map)
 
-    def set_lidar(self, ranges: list):
-        """ Notify the model of new LIDAR data. """
-        self.last_lidar = np.array(ranges[0:360])
-
     def __init__(self, debug_data_dir: Path = Path(__file__).parent.parent / 'particle_sensor_data'):
         self.debug_data_dir = debug_data_dir
         self.debug_data_dir.mkdir(exist_ok=True)
 
-    # KLUDGE: All local state is stored as instance variables to easily separate graphing
     def calculate_weight(self, particle: Particle) -> float:
         """
         Use the sensor model to figure out how likely it is that the robot was at the particle given

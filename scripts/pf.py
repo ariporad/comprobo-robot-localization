@@ -14,26 +14,27 @@ from nav_msgs.srv import GetMap
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray
 
-from sensor_model import SensorModel
+from sensor_model import SensorModel, RayTracingSensorModel, OccupancyFieldSensorModel
 from motion_model import MotionModel
 
 from helper_functions import TFHelper,  PoseTuple, Particle, RandomSampler, print_time
 
 
 class ParticleFilter:
-    DEBUG_SAVE_SENSOR_STATE_PLOTS = 15
+    DEBUG_SAVE_SENSOR_STATE_PLOTS = 0
 
     NUM_PARTICLES = 300
 
-    particle_sampler_xy = RandomSampler(0.25, 0.1, (-5, 5))
+    particle_sampler_xy = RandomSampler(0.15, 0.0, (-5, 5))
     particle_sampler_theta = RandomSampler(0.15 * math.pi, 0)
 
     motion_model = MotionModel(stddev=.15)
-    sensor_model = SensorModel()
+    sensor_model: SensorModel = OccupancyFieldSensorModel()
+    # sensor_model: SensorModel = RayTracingSensorModel()
 
     # Don't update unless we've moved a bit
-    UPDATE_MIN_DISTANCE: float = 0.01
-    UPDATE_MIN_ROTATION: float = 0.05
+    UPDATE_MIN_DISTANCE: float = 0.05
+    UPDATE_MIN_ROTATION: float = 0.1
 
     last_pose: PoseTuple = None
 
