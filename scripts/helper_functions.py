@@ -12,12 +12,13 @@ import tf.transformations as t
 
 from time import perf_counter
 from collections import namedtuple
-from typing import Optional, Tuple
 from numpy.random import default_rng
 from contextlib import contextmanager
+from typing import Optional, Tuple, Union, Iterable
 from tf import TransformListener, TransformBroadcaster
 
 from std_msgs.msg import Header
+from visualization_msgs.msg import Marker
 from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
 
 rng = default_rng()
@@ -105,6 +106,52 @@ def rotation_matrix(angle: float) -> np.array:
         [np.cos(angle), -np.sin(angle)],
         [np.sin(angle), np.cos(angle)]
     ])
+
+
+def make_marker(point: Union[Point, Iterable[Point]] = Point(0, 0, 0),
+                orientation: Quaternion = Quaternion(0, 0, 0, 1),
+                id: int = 0,
+                ns: str = "aporad",
+                shape=Marker.SPHERE,
+                action=Marker.ADD,
+                scale=(1.0, 0.1, 0.1),
+                color=(0.0, 1.0, 0.0, 1.0),
+                lifetime=1,
+                frame_id: str = 'odom'):
+    """
+    Generate a Marker message, with some reasonable defaults.
+    Adapted from: https://comprobo20.github.io/Sample_code/marker_sample
+    """
+    marker = Marker()
+    marker.header.frame_id = frame_id
+    marker.header.stamp = rospy.Time.now()
+    marker.ns = ns
+    marker.id = id
+    marker.type = shape
+    marker.action = action
+    marker.pose.orientation = orientation
+    if isinstance(point, Point):
+        marker.pose.position = point
+    else:
+        marker.pose.position = Point(0, 0, 0)
+        marker.points = point
+
+    marker.lifetime = rospy.Duration(lifetime)
+
+    if isinstance(scale, int) or isinstance(scale, float):
+        scale = (scale, scale, scale)
+    x, y, z = scale
+    marker.scale.x = x
+    marker.scale.y = y
+    marker.scale.z = z
+
+    r, g, b, a = color
+    marker.color.r = r
+    marker.color.g = g
+    marker.color.b = b
+    marker.color.a = a
+
+    return marker
 
 
 @contextmanager

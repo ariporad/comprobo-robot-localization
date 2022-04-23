@@ -12,6 +12,7 @@ import tf2_geometry_msgs  # Importing for side-effects
 from nav_msgs.msg import Odometry
 from nav_msgs.srv import GetMap
 from sensor_msgs.msg import LaserScan
+from visualization_msgs.msg import Marker
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray
 
 from sensor_model import SensorModel, RayTracingSensorModel, OccupancyFieldSensorModel
@@ -21,20 +22,20 @@ from helper_functions import TFHelper,  PoseTuple, Particle, RandomSampler, prin
 
 
 class ParticleFilter:
-    DEBUG_SAVE_SENSOR_STATE_PLOTS = 15
+    DEBUG_SAVE_SENSOR_STATE_PLOTS = 0
 
-    NUM_PARTICLES = 300
+    NUM_PARTICLES = 500
 
-    particle_sampler_xy = RandomSampler(0.15, 0.0, (-5, 5))
-    particle_sampler_theta = RandomSampler(0.15 * math.pi, 0.00)
+    particle_sampler_xy = RandomSampler(0.10, 0.0, (-5, 5))
+    particle_sampler_theta = RandomSampler(0.10 * math.pi, 0.00)
 
-    motion_model = MotionModel(stddev=.15)
-    # sensor_model: SensorModel = OccupancyFieldSensorModel()
+    motion_model = MotionModel(stddev=0)  # .05)
+    # sensor_model: SensorModel  # = OccupancyFieldSensorModel()
     sensor_model: SensorModel = RayTracingSensorModel()
 
     # Don't update unless we've moved a bit
-    UPDATE_MIN_DISTANCE: float = 0.05
-    UPDATE_MIN_ROTATION: float = 0.1 * math.pi
+    UPDATE_MIN_DISTANCE: float = 0.001
+    UPDATE_MIN_ROTATION: float = 0.001 * math.pi
 
     last_pose: PoseTuple = None
 
@@ -70,6 +71,10 @@ class ParticleFilter:
 
         rospy.wait_for_service("static_map")
         get_static_map = rospy.ServiceProxy("static_map", GetMap)
+        # self.sensor_model = OccupancyFieldSensorModel(
+        #     rospy.Publisher(
+        #         '/particle_lidar', Marker, queue_size=10)
+        # )
         self.sensor_model.set_map(get_static_map().map)
 
         # IMPORTANT: Register subscribers last, so callbacks can't happen before ready
@@ -156,8 +161,8 @@ class ParticleFilter:
         try:
             with print_time('Updating'):
                 # Resample Particles
-                # particles = list(self.particles)
-                particles = self.resample_particles(self.particles)
+                particles = list(self.particles)
+                # particles = self.resample_particles(self.particles)
 
                 # Apply Motion Model
                 particles = self.motion_model.apply(particles, delta_pose)

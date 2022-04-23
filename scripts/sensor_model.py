@@ -1,4 +1,5 @@
 import math
+import rospy
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -6,9 +7,11 @@ from pathlib import Path
 from typing import Optional
 from abc import ABC, abstractmethod
 
+from geometry_msgs.msg import Point
 from nav_msgs.msg import OccupancyGrid
 from occupancy_field import OccupancyField
-from helper_functions import Particle, normalize_angle
+from visualization_msgs.msg import Marker
+from helper_functions import Particle, normalize_angle, make_marker
 
 
 class SensorModel(ABC):
@@ -40,8 +43,11 @@ class OccupancyFieldSensorModel(SensorModel):
     closest_obstacle: float = 0.0
     """ Distance to closest obstacle in most recent LIDAR data. """
 
-    def __init__(self):
+    def __init__(self, display_pub: rospy.Publisher, debug_data_dir: Path = Path(__file__).parent.parent / 'particle_sensor_data'):
+        self.debug_data_dir = debug_data_dir
+        self.debug_data_dir.mkdir(exist_ok=True)
         self.occupancy_field = OccupancyField()
+        self.display_pub = display_pub
 
     def set_lidar(self, ranges: list):
         """ Notify the model of new LIDAR data. """
@@ -51,12 +57,45 @@ class OccupancyFieldSensorModel(SensorModel):
         self.closest_obstacle = np.min(ranges[ranges > 0])
 
     def calculate_weight(self, particle: Particle) -> float:
-        expected_distance = self.occupancy_field.get_closest_obstacle_distance(
-            particle.x, particle.y
-        )
-        return (1 / abs(
-            (self.closest_obstacle - expected_distance) / self.closest_obstacle
-        )) ** 2
+        self.particle = particle
+        self.thetas = np.deg2rad(np.arange(0, 360)) + particle.theta
+        self.rs = self.last_lidar
+        self.xs = (self.rs * np.cos(self.thetas)) + particle.x
+        self.ys = (self.rs * np.sin(self.thetas)) + particle.y
+
+        self.weight = 0
+        self.num_valid = 0
+        self.actual_distances = np.zeros_like(self.rs)
+        self.expected_distances = np.zeros_like(self.rs)
+
+        for i in range(len(self.rs)):
+            x = self.xs[i]
+            y = self.ys[i]
+            # actual_distance = self.rs[i]  # np.sqrt((x**2) + (y**2))
+            # self.actual_distances[i] = actual_distance
+            expected_distance = self.occupancy_field.get_closest_obstacle_distance(
+                x, y)
+            if np.isnan(expected_distance):
+                continue
+            self.expected_distances[i] = expected_distance
+            # diff = abs(actual_distance - expected_distance)
+            self.num_valid += 1
+            self.weight += np.exp(-(expected_distance ** 2) / 0.005) ** 4
+
+        # marker = make_marker(
+        #     point=[Point(x, y, 0) for x, y in zip(self.xs, self.ys)],
+        #     shape=Marker.CUBE_LIST,
+        #     scale=(0.1, 0.1, 0.1),
+        #     frame_id='map'
+        # )
+
+        # self.display_pub.publish(marker)
+
+        # print("Distances:", distances, "weight:", weight)
+
+        # print("NUM VALID:", num_valid, "WEIGHT:", weight)
+
+        return self.weight
 
     def set_map(self, map: OccupancyGrid):
         # OccupancyField gets the map itself, do nothing
@@ -64,7 +103,21 @@ class OccupancyFieldSensorModel(SensorModel):
 
     def save_debug_plot(self, name: str):
         # Not supported
-        pass
+        fig, ax = plt.subplots(subplot_kw={'projection': 'polar'})
+        # https://stackoverflow.com/a/18486470
+        ax.set_theta_offset(math.pi/2.0)
+        ax.grid(True)
+        ax.arrow(0, 0, 0, 1)
+        ax.plot(np.deg2rad(np.arange(0, 360)), self.rs, 'r.')
+        ax.plot(np.deg2rad(np.arange(0, 360)), self.expected_distances, 'b.')
+        # ax.plot(np.deg2rad(np.arange(0, 360)), self.actual_distances, 'c.')
+        # ax.plot(self.obstacle_thetas_rad, self.obstacle_rs, 'b,')
+        # ax.plot(np.deg2rad(np.arange(0, 360)), self.lidar_expected, 'c,')
+        ax.set_title(
+            f"OF: ({self.particle.x:.2f}, {self.particle.y:.2f}; {self.particle.theta:.2f}; w: {self.weight:.6f})"
+        )
+        fig.savefig(self.debug_data_dir / f"{name}_{self.weight:010.6f}.png")
+        plt.close(fig)
 
 
 class RayTracingSensorModel(SensorModel):
@@ -136,7 +189,8 @@ class RayTracingSensorModel(SensorModel):
         self.lidar_diff = np.abs(self.last_lidar - self.lidar_expected)
 
         # Calculate weight
-        self.weight = np.sum((1 / self.lidar_diff[self.lidar_diff > 0.0]) ** 3)
+        self.weight = np.sum(
+            np.exp(self.lidar_diff[self.lidar_diff > 0.0] ** 2) ** 3)
 
         return self.weight
 
@@ -150,8 +204,8 @@ class RayTracingSensorModel(SensorModel):
         ax.set_theta_offset(math.pi/2.0)
         ax.grid(True)
         ax.arrow(0, 0, 0, 1)
-        ax.plot(self.obstacle_thetas_rad, self.obstacle_rs, 'b,')
-        ax.plot(np.deg2rad(np.arange(0, 360)), self.lidar_expected, 'c.')
+        # ax.plot(self.obstacle_thetas_rad, self.obstacle_rs, 'b,')
+        ax.plot(np.deg2rad(np.arange(0, 360)), self.lidar_expected, 'c,')
         ax.plot(np.deg2rad(np.arange(0, 360)), self.last_lidar, 'r.')
         ax.set_title(
             f"({self.particle.x:.2f}, {self.particle.y:.2f}; {self.particle.theta:.2f}; w: {self.weight:.6f})"
