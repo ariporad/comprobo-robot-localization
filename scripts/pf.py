@@ -34,8 +34,8 @@ class ParticleFilter:
     sensor_model: SensorModel = RayTracingSensorModel()
 
     # Don't update unless we've moved a bit
-    UPDATE_MIN_DISTANCE: float = 0.001
-    UPDATE_MIN_ROTATION: float = 0.001 * math.pi
+    UPDATE_MIN_DISTANCE: float = 0  # 0.001
+    UPDATE_MIN_ROTATION: float = 0  # 0.001 * math.pi
 
     last_pose: PoseTuple = None
     last_lidar: Optional[np.array] = None
@@ -177,11 +177,14 @@ class ParticleFilter:
                 particles = self.motion_model.apply(particles, delta_pose)
 
                 # Update Weights Based on Sensor Model
-                particles = [
-                    Particle(p.x, p.y, p.theta,
-                             self.sensor_model.calculate_weight(p))
-                    for p in particles
-                ]
+                with print_time('Sensor Model'):
+                    particles = [
+                        Particle(p.x, p.y, p.theta,
+                                 self.sensor_model.calculate_weight(p))
+                        for p in particles
+                    ]
+
+                self.sensor_model.print_timings()
 
                 # print(sorted(p.weight for p in particles))
 

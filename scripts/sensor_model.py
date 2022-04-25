@@ -1,17 +1,19 @@
+from contextlib import contextmanager
 import math
 import rospy
 import numpy as np
 import matplotlib.pyplot as plt
+from time import perf_counter
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict
 from abc import ABC, abstractmethod
 
 from geometry_msgs.msg import Point
 from nav_msgs.msg import OccupancyGrid
 from occupancy_field import OccupancyField
 from visualization_msgs.msg import Marker
-from helper_functions import Particle, normalize_angle, make_marker
+from helper_functions import Particle, normalize_angle, make_marker, print_time
 
 
 class SensorModel(ABC):
@@ -135,6 +137,8 @@ class RayTracingSensorModel(SensorModel):
     debug_data_dir: Path
     """ Folder to store debugging images (see save_debug_plot). Defaults to __file__/../particle_sensor_data. """
 
+    phase_timings: Dict[str, float]
+
     def set_map(self, map: OccupancyGrid):
         """ Set the map. """
         self.map_obstacles = self.preprocess_map(map)
@@ -142,6 +146,40 @@ class RayTracingSensorModel(SensorModel):
     def __init__(self, debug_data_dir: Path = Path(__file__).parent.parent / 'particle_sensor_data'):
         self.debug_data_dir = debug_data_dir
         self.debug_data_dir.mkdir(exist_ok=True)
+        self.phase_timings = {}
+
+    @contextmanager
+    def time(self, name: str = "Timer"):
+        yield
+        return
+        start = perf_counter()
+        yield
+        duration = perf_counter() - start
+
+        if name not in self.phase_timings:
+            self.phase_timings[name] = (0, 0.0)
+
+        count, dur = self.phase_timings[name]
+        self.phase_timings[name] = (count + 1), (dur + duration)
+
+    def print_timings(self, reset=True):
+        return
+        out = 'Sensor Model Timings (avg): '
+
+        total_avg_dur = 0.0
+
+        for name, data in self.phase_timings.items():
+            count, dur = data
+            avg_dur_ms = (dur / count) * 1000
+            total_avg_dur += avg_dur_ms
+            out += f"{avg_dur_ms:.4f}ms {name} / "
+
+        out += f"{total_avg_dur:.4f}ms total."
+
+        print(out)
+
+        if reset:
+            self.phase_timings = {}
 
     def calculate_weight(self, particle: Particle) -> float:
         """
@@ -152,6 +190,7 @@ class RayTracingSensorModel(SensorModel):
         instance variables on the model class. This enables you to call save_debug_plot immediately
         afterwards to get a pretty graph showing the internal state of the model.
         """
+        # with self.time('Setup'):
         self.particle = particle
 
         # Take map data as cartesian coords
@@ -161,21 +200,19 @@ class RayTracingSensorModel(SensorModel):
             [self.particle.x, self.particle.y]
 
         # Convert to polar coordinates
-        self.obstacle_rs = np.sqrt(
-            (self.obstacles_shifted[:, 0] ** 2) +
-            (self.obstacles_shifted[:, 1] ** 2)
-        )
+        self.obstacle_rs = np.linalg.norm(self.obstacles_shifted, axis=1)
+        mask = self.obstacle_rs < 3.0
+        self.obstacle_rs = self.obstacle_rs[mask]
         self.obstacle_thetas_rad = normalize_angle(
             np.arctan2(
-                self.obstacles_shifted[:, 1],
-                self.obstacles_shifted[:, 0]
+                self.obstacles_shifted[mask][:, 1],
+                self.obstacles_shifted[mask][:, 0]
             ) - self.particle.theta  # Rotate by particle's heading
         )
 
         # Convert to degrees, and descretize to whole-degree increments (like LIDAR data)
         # This is the only place we use degrees, but it's helpful since LIDAR is indexed by degree
-        self.obstacle_thetas = (np.rad2deg(
-            self.obstacle_thetas_rad).round())
+        self.obstacle_thetas = np.rad2deg(self.obstacle_thetas_rad).round()
 
         self.obstacle_thetas[self.obstacle_thetas < 0.0] += 360.0
 
@@ -183,22 +220,39 @@ class RayTracingSensorModel(SensorModel):
         # Indexed like lidar data, where each index is the degree
         self.lidar_expected = np.zeros(360)
 
-        for theta, r in zip(self.obstacle_thetas, self.obstacle_rs):
-            # theta is already a whole number, just make it the right type
-            idx = int(theta)
-            if idx < 0 or idx >= 360:
-                print("ERROR: INVALID IDX:", idx)
+        # np.minimum.accumulate(self.obstacle_rs[obstacle_mask])
 
-            # Assume the LIDAR can't see anything beyond 3m
-            # TODO: refine this estimate (I think it's roughly correct)
-            if r > 3.0:
-                continue
+        for i in range(len(self.lidar_expected)):
+            # with self.time('main-np-mask'):
 
-            if self.lidar_expected[idx] == 0.0 or r < self.lidar_expected[idx]:
-                self.lidar_expected[idx] = r
+            # with self.time('main-np-reduce'):
+            value = np.minimum.reduce(
+                self.obstacle_rs,
+                where=self.obstacle_thetas == i,
+                initial=10.0,
+            )
+            # with self.time('main-py'):
+            if value > 3.0:
+                value = 0.0
+            self.lidar_expected[i] = value
+
+        # for theta, r in zip(self.obstacle_thetas, self.obstacle_rs):
+        #     # theta is already a whole number, just make it the right type
+        #     idx = int(theta)
+        #     if idx < 0 or idx >= 360:
+        #         print("ERROR: INVALID IDX:", idx)
+
+        #     # Assume the LIDAR can't see anything beyond 3m
+        #     # TODO: refine this estimate (I think it's roughly correct)
+        #     if r > 3.0:
+        #         continue
+
+        #     if self.lidar_expected[idx] == 0.0 or r < self.lidar_expected[idx]:
+        #         self.lidar_expected[idx] = r
 
         # Compare to LIDAR data
         self.lidar_diff = np.abs(self.last_lidar - self.lidar_expected)
+        self.lidar_diff = self.lidar_diff[~np.isnan(self.lidar_diff)]
 
         # Calculate weight
         self.weight = np.sum(
@@ -262,5 +316,7 @@ class RayTracingSensorModel(SensorModel):
                     occupied[curr, 1] = (float(y) * map.info.resolution) \
                         + map.info.origin.position.y
                     curr += 1
+
+        print("Num Map Obstacles:", len(occupied), '!\n\n')
 
         return occupied
