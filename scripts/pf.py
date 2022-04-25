@@ -56,6 +56,8 @@ class ParticleFilter:
     tf_buf: tf2_ros.Buffer
     tf_helper: TFHelper
 
+    executor: ThreadPoolExecutor
+
     def __init__(self):
         rospy.init_node('pf')
 
@@ -65,6 +67,8 @@ class ParticleFilter:
         self.tf_buf = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buf)
         self.tf_helper = TFHelper()
+
+        self.executor = ThreadPoolExecutor()
 
         # publisher for the particle cloud for visualizing in rviz.
         self.particle_pub = rospy.Publisher("particlecloud",
@@ -167,27 +171,25 @@ class ParticleFilter:
         self.is_updating = True
         try:
             with print_time('Updating'):
-                with ThreadPoolExecutor() as executor:
-                    # Use a consistent LIDAR scan for the entire update
-                    self.sensor_model.set_lidar(self.last_lidar)
+                # Use a consistent LIDAR scan for the entire update
+                self.sensor_model.set_lidar(self.last_lidar)
 
-                    # Resample Particles
-                    particles = list(self.particles)
-                    particles = self.resample_particles(self.particles)
+                # Resample Particles
+                particles = self.resample_particles(self.particles)
 
-                    # Apply Motion Model
-                    particles = self.motion_model.apply(particles, delta_pose)
+                # Apply Motion Model
 
+                def _update_particle(p):
+                    p = self.motion_model.apply(p, delta_pose)
                     # Update Weights Based on Sensor Model
-                    def _generate_particle(p):
-                        return Particle(p.x, p.y, p.theta, self.sensor_model.calculate_weight(p))
+                    return Particle(p.x, p.y, p.theta, self.sensor_model.calculate_weight(p))
 
-                    particles = list(executor.map(
-                        _generate_particle, particles))
+                particles = list(self.executor.map(
+                    _update_particle, particles))
 
-                    # Set Particles
-                    self.set_particles(stamp, particles)
-                    self.last_update = rospy.Time.now()
+                # Set Particles
+                self.set_particles(stamp, particles)
+                self.last_update = rospy.Time.now()
         finally:
             self.is_updating = False
 
@@ -295,11 +297,14 @@ class ParticleFilter:
     def run(self):
         r = rospy.Rate(5)
 
-        while not rospy.is_shutdown():
-            # in the main loop all we do is continuously broadcast the latest
-            # map to odom transform
-            self.tf_helper.send_last_map_to_odom_transform()
-            r.sleep()
+        try:
+            while not rospy.is_shutdown():
+                # in the main loop all we do is continuously broadcast the latest
+                # map to odom transform
+                self.tf_helper.send_last_map_to_odom_transform()
+                r.sleep()
+        finally:
+            self.executor.shutdown()
 
 
 if __name__ == '__main__':

@@ -13,22 +13,17 @@ class MotionModel:
     def __init__(self, stddev: float):
         self.error_sampler = RelativeRandomSampler(stddev)
 
-    def apply(self, particles: List[Particle], delta_pose: PoseTuple) -> List[Particle]:
+    def apply(self, particle: Particle, delta_pose: PoseTuple) -> Particle:
         dx_robot = self.error_sampler.sample(delta_pose.x)
         dy_robot = self.error_sampler.sample(delta_pose.y)
         dtheta = self.error_sampler.sample(delta_pose.theta)
 
-        new_particles = []
-        for p in particles:
-            dx, dy = np.matmul(rotation_matrix(p.theta), [dx_robot, dy_robot])
+        dx, dy = np.matmul(rotation_matrix(
+            particle.theta), [dx_robot, dy_robot])
 
-            new_particles.append(
-                Particle(
-                    x=p.x - dx,
-                    y=p.y - dy,
-                    theta=p.theta - dtheta,
-                    weight=p.weight
-                )
-            )
-
-        return new_particles
+        return Particle(
+            x=particle.x - dx,
+            y=particle.y - dy,
+            theta=particle.theta - dtheta,
+            weight=particle.weight
+        )
