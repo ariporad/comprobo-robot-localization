@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from concurrent.futures import ThreadPoolExecutor
 import math
 import rospy
 import random
@@ -166,31 +167,27 @@ class ParticleFilter:
         self.is_updating = True
         try:
             with print_time('Updating'):
-                # Use a consistent LIDAR scan for the entire update
-                self.sensor_model.set_lidar(self.last_lidar)
+                with ThreadPoolExecutor() as executor:
+                    # Use a consistent LIDAR scan for the entire update
+                    self.sensor_model.set_lidar(self.last_lidar)
 
-                # Resample Particles
-                particles = list(self.particles)
-                particles = self.resample_particles(self.particles)
+                    # Resample Particles
+                    particles = list(self.particles)
+                    particles = self.resample_particles(self.particles)
 
-                # Apply Motion Model
-                particles = self.motion_model.apply(particles, delta_pose)
+                    # Apply Motion Model
+                    particles = self.motion_model.apply(particles, delta_pose)
 
-                # Update Weights Based on Sensor Model
-                with print_time('Sensor Model'):
-                    particles = [
-                        Particle(p.x, p.y, p.theta,
-                                 self.sensor_model.calculate_weight(p))
-                        for p in particles
-                    ]
+                    # Update Weights Based on Sensor Model
+                    def _generate_particle(p):
+                        return Particle(p.x, p.y, p.theta, self.sensor_model.calculate_weight(p))
 
-                self.sensor_model.print_timings()
+                    particles = list(executor.map(
+                        _generate_particle, particles))
 
-                # print(sorted(p.weight for p in particles))
-
-                # Set Particles
-                self.set_particles(stamp, particles)
-                self.last_update = rospy.Time.now()
+                    # Set Particles
+                    self.set_particles(stamp, particles)
+                    self.last_update = rospy.Time.now()
         finally:
             self.is_updating = False
 

@@ -189,81 +189,57 @@ class RayTracingSensorModel(SensorModel):
         Think of this as a pure method, although it isn't actually: it stores all internal state as
         instance variables on the model class. This enables you to call save_debug_plot immediately
         afterwards to get a pretty graph showing the internal state of the model.
-        """
-        # with self.time('Setup'):
-        self.particle = particle
 
+        This method is thread-safe.
+        """
         # Take map data as cartesian coords
         # Shift to center at particle
         # NB: Both the map and all particles are in the `map` frame
-        self.obstacles_shifted = self.map_obstacles - \
-            [self.particle.x, self.particle.y]
+        obstacles_shifted = self.map_obstacles - \
+            [particle.x, particle.y]
 
         # Convert to polar coordinates
-        self.obstacle_rs = np.linalg.norm(self.obstacles_shifted, axis=1)
-        mask = self.obstacle_rs < 3.0
-        self.obstacle_rs = self.obstacle_rs[mask]
-        self.obstacle_thetas_rad = normalize_angle(
+        obstacle_rs = np.linalg.norm(obstacles_shifted, axis=1)
+        mask = obstacle_rs < 3.0
+        obstacle_rs = obstacle_rs[mask]
+        obstacle_thetas_rad = normalize_angle(
             np.arctan2(
-                self.obstacles_shifted[mask][:, 1],
-                self.obstacles_shifted[mask][:, 0]
-            ) - self.particle.theta  # Rotate by particle's heading
+                obstacles_shifted[mask][:, 1],
+                obstacles_shifted[mask][:, 0]
+            ) - particle.theta  # Rotate by particle's heading
         )
 
         # Convert to degrees, and descretize to whole-degree increments (like LIDAR data)
         # This is the only place we use degrees, but it's helpful since LIDAR is indexed by degree
-        self.obstacle_thetas = np.rad2deg(self.obstacle_thetas_rad).round()
+        obstacle_thetas = np.rad2deg(obstacle_thetas_rad).round()
 
-        self.obstacle_thetas[self.obstacle_thetas < 0.0] += 360.0
+        obstacle_thetas[obstacle_thetas < 0.0] += 360.0
 
         # Take the minimum at each angle
         # Indexed like lidar data, where each index is the degree
-        self.lidar_expected = np.zeros(360)
+        lidar_expected = np.zeros(360)
 
-        # np.minimum.accumulate(self.obstacle_rs[obstacle_mask])
-
-        for i in range(len(self.lidar_expected)):
-            # with self.time('main-np-mask'):
-
-            # with self.time('main-np-reduce'):
+        for i in range(len(lidar_expected)):
             value = np.minimum.reduce(
-                self.obstacle_rs,
-                where=self.obstacle_thetas == i,
+                obstacle_rs,
+                where=obstacle_thetas == i,
                 initial=10.0,
             )
-            # with self.time('main-py'):
             if value > 3.0:
                 value = 0.0
-            self.lidar_expected[i] = value
-
-        # for theta, r in zip(self.obstacle_thetas, self.obstacle_rs):
-        #     # theta is already a whole number, just make it the right type
-        #     idx = int(theta)
-        #     if idx < 0 or idx >= 360:
-        #         print("ERROR: INVALID IDX:", idx)
-
-        #     # Assume the LIDAR can't see anything beyond 3m
-        #     # TODO: refine this estimate (I think it's roughly correct)
-        #     if r > 3.0:
-        #         continue
-
-        #     if self.lidar_expected[idx] == 0.0 or r < self.lidar_expected[idx]:
-        #         self.lidar_expected[idx] = r
+            lidar_expected[i] = value
 
         # Compare to LIDAR data
-        self.lidar_diff = np.abs(self.last_lidar - self.lidar_expected)
-        self.lidar_diff = self.lidar_diff[~np.isnan(self.lidar_diff)]
+        lidar_diff = np.abs(self.last_lidar - lidar_expected)
 
         # Calculate weight
-        self.weight = np.sum(
+        return np.sum(
             (
                 0.5 * (
-                    np.exp(-(self.lidar_diff[self.lidar_diff > 0.0] ** 2) / 0.01)
+                    np.exp(-(lidar_diff[lidar_diff > 0.0] ** 2) / 0.01)
                 )
             ) ** 3
         )
-
-        return self.weight
 
     def save_debug_plot(self, name: str):
         """
