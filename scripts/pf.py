@@ -12,25 +12,25 @@ import tf2_geometry_msgs  # Importing for side-effects
 from nav_msgs.msg import Odometry
 from nav_msgs.srv import GetMap
 from sensor_msgs.msg import LaserScan
-from visualization_msgs.msg import Marker
+from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray
 
 from sensor_model import SensorModel, RayTracingSensorModel, OccupancyFieldSensorModel
 from motion_model import MotionModel
 
-from helper_functions import TFHelper,  PoseTuple, Particle, RandomSampler, print_time
+from helper_functions import TFHelper,  PoseTuple, Particle, RandomSampler, make_marker, print_time
 
 
 class ParticleFilter:
     DEBUG_SAVE_SENSOR_STATE_PLOTS = 0
 
-    NUM_PARTICLES = 500
+    NUM_PARTICLES = 250
 
     particle_sampler_xy = RandomSampler(0.10, 0.0, (-5, 5))
-    particle_sampler_theta = RandomSampler(0.10 * math.pi, 0.00)
+    particle_sampler_theta = RandomSampler(0.15 * math.pi, 0.00)
 
-    motion_model = MotionModel(stddev=0)  # .05)
-    # sensor_model: SensorModel  # = OccupancyFieldSensorModel()
+    motion_model = MotionModel(stddev=.05)
+    # sensor_model: SensorModel = OccupancyFieldSensorModel()
     sensor_model: SensorModel = RayTracingSensorModel()
 
     # Don't update unless we've moved a bit
@@ -66,7 +66,7 @@ class ParticleFilter:
 
         # publisher for the particle cloud for visualizing in rviz.
         self.particle_pub = rospy.Publisher("particlecloud",
-                                            PoseArray,
+                                            MarkerArray,
                                             queue_size=10)
 
         rospy.wait_for_service("static_map")
@@ -89,6 +89,7 @@ class ParticleFilter:
 
     def on_initial_pose(self, msg: PoseWithCovarianceStamped):
         """ Callback to (re-)initialize the particle filter whenever an initial pose is set. """
+
         x, y, theta = \
             self.tf_helper.convert_pose_to_xy_and_theta(msg.pose.pose)
 
@@ -162,7 +163,7 @@ class ParticleFilter:
             with print_time('Updating'):
                 # Resample Particles
                 particles = list(self.particles)
-                # particles = self.resample_particles(self.particles)
+                particles = self.resample_particles(self.particles)
 
                 # Apply Motion Model
                 particles = self.motion_model.apply(particles, delta_pose)
@@ -173,6 +174,8 @@ class ParticleFilter:
                              self.sensor_model.calculate_weight(p))
                     for p in particles
                 ]
+
+                print(sorted(p.weight for p in particles))
 
                 # Set Particles
                 self.set_particles(stamp, particles)
@@ -220,7 +223,11 @@ class ParticleFilter:
         robot_pose = np.average([  # TODO: should this be median?
             (particle.x, particle.y, particle.theta)
             for particle in self.particles
-        ], axis=0, weights=[p.weight for p in particles])
+        ], axis=0, weights=[p.weight for p in self.particles])
+
+        if np.isnan(robot_pose).any():
+            print("WARNING: Robot pose is NaN!", robot_pose)
+            return
 
         self.tf_helper.fix_map_to_odom_transform(
             stamp,
@@ -232,24 +239,37 @@ class ParticleFilter:
     def visualize_particles(self):
         """ Publish particles for viewing in Rviz. """
         # Publish particles
-        poses = PoseArray()
-        poses.header.stamp = self.particles_stamp
-        poses.header.frame_id = 'map'
-        poses.poses = [
-            self.tf_helper.convert_xy_and_theta_to_pose(
+        markers = MarkerArray()
+        for i, particle in enumerate(self.normalize_weights(self.particles)):
+            pose = self.tf_helper.convert_xy_and_theta_to_pose(
                 (particle.x, particle.y, particle.theta)
             )
-            for particle in self.particles
-        ]
-        self.particle_pub.publish(poses)
+
+            scale_factor = max(0 if np.isnan(particle.weight)
+                               else (particle.weight * (self.NUM_PARTICLES / 3)), 0.1)
+
+            scale = (scale_factor, scale_factor * 0.1, scale_factor * 0.1)
+
+            marker = make_marker(pose, shape=Marker.ARROW,
+                                 frame_id='map', ns="particle", id=i, lifetime=60, scale=scale)
+
+            markers.markers.append(marker)
+
+        self.particle_pub.publish(markers)
 
         # Save some images of sensor model internal state
         # To enable or disable this, change DEBUG_SAVE_SENSOR_STATE_PLOTS to a number (15 is good),
         # or 0 (to disable).
-        for particle in random.choices(self.particles, k=self.DEBUG_SAVE_SENSOR_STATE_PLOTS):
-            self.sensor_model.calculate_weight(particle)
-            self.sensor_model.save_debug_plot(
-                f"particle_{self.update_count:03d}")
+        # for particle in random.choices(self.particles, k=self.DEBUG_SAVE_SENSOR_STATE_PLOTS):
+        if self.update_count >= 0 and self.DEBUG_SAVE_SENSOR_STATE_PLOTS > 0:
+            sorted_particles = sorted(
+                self.particles, key=lambda p: p.weight, reverse=True)
+            to_draw = sorted_particles[-self.DEBUG_SAVE_SENSOR_STATE_PLOTS:] + \
+                sorted_particles[:self.DEBUG_SAVE_SENSOR_STATE_PLOTS]
+            for particle in to_draw:
+                self.sensor_model.calculate_weight(particle)
+                self.sensor_model.save_debug_plot(
+                    f"particle_{self.update_count:03d}")
         self.update_count += 1
 
     def normalize_weights(self, particles: List[Particle]) -> List[Particle]:

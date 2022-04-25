@@ -43,7 +43,7 @@ class OccupancyFieldSensorModel(SensorModel):
     closest_obstacle: float = 0.0
     """ Distance to closest obstacle in most recent LIDAR data. """
 
-    def __init__(self, display_pub: rospy.Publisher, debug_data_dir: Path = Path(__file__).parent.parent / 'particle_sensor_data'):
+    def __init__(self, display_pub: Optional[rospy.Publisher] = None, debug_data_dir: Path = Path(__file__).parent.parent / 'particle_sensor_data'):
         self.debug_data_dir = debug_data_dir
         self.debug_data_dir.mkdir(exist_ok=True)
         self.occupancy_field = OccupancyField()
@@ -69,18 +69,24 @@ class OccupancyFieldSensorModel(SensorModel):
         self.expected_distances = np.zeros_like(self.rs)
 
         for i in range(len(self.rs)):
+            if self.rs[i] == 0.0:  # Ignore angles where we don't have any LIDAR data
+                continue
+
             x = self.xs[i]
             y = self.ys[i]
             # actual_distance = self.rs[i]  # np.sqrt((x**2) + (y**2))
             # self.actual_distances[i] = actual_distance
             expected_distance = self.occupancy_field.get_closest_obstacle_distance(
                 x, y)
-            if np.isnan(expected_distance):
-                continue
+            if np.isnan(expected_distance):  # or expected_distance > 0.1:
+                self.weight = max(self.weight - 1, 0)
             self.expected_distances[i] = expected_distance
             # diff = abs(actual_distance - expected_distance)
             self.num_valid += 1
-            self.weight += np.exp(-(expected_distance ** 2) / 0.005) ** 4
+            self.weight += (10 *
+                            (np.exp(-(expected_distance ** 2) / 0.0005) ** 3)) ** 2
+
+        # print(self.expected_distances)
 
         # marker = make_marker(
         #     point=[Point(x, y, 0) for x, y in zip(self.xs, self.ys)],
@@ -89,7 +95,8 @@ class OccupancyFieldSensorModel(SensorModel):
         #     frame_id='map'
         # )
 
-        # self.display_pub.publish(marker)
+        # if self.display_pub is not None:
+        #     self.display_pub.publish(marker)
 
         # print("Distances:", distances, "weight:", weight)
 
@@ -109,7 +116,7 @@ class OccupancyFieldSensorModel(SensorModel):
         ax.grid(True)
         ax.arrow(0, 0, 0, 1)
         ax.plot(np.deg2rad(np.arange(0, 360)), self.rs, 'r.')
-        ax.plot(np.deg2rad(np.arange(0, 360)), self.expected_distances, 'b.')
+        ax.plot(np.deg2rad(np.arange(0, 360)), self.expected_distances, 'b,')
         # ax.plot(np.deg2rad(np.arange(0, 360)), self.actual_distances, 'c.')
         # ax.plot(self.obstacle_thetas_rad, self.obstacle_rs, 'b,')
         # ax.plot(np.deg2rad(np.arange(0, 360)), self.lidar_expected, 'c,')
@@ -162,12 +169,15 @@ class RayTracingSensorModel(SensorModel):
             np.arctan2(
                 self.obstacles_shifted[:, 1],
                 self.obstacles_shifted[:, 0]
-            ) + self.particle.theta  # Rotate by particle's heading
+            ) - self.particle.theta  # Rotate by particle's heading
         )
 
         # Convert to degrees, and descretize to whole-degree increments (like LIDAR data)
         # This is the only place we use degrees, but it's helpful since LIDAR is indexed by degree
-        self.obstacle_thetas = np.rad2deg(self.obstacle_thetas_rad).round()
+        self.obstacle_thetas = (np.rad2deg(
+            self.obstacle_thetas_rad).round())
+
+        self.obstacle_thetas[self.obstacle_thetas < 0.0] += 360.0
 
         # Take the minimum at each angle
         # Indexed like lidar data, where each index is the degree
@@ -176,6 +186,8 @@ class RayTracingSensorModel(SensorModel):
         for theta, r in zip(self.obstacle_thetas, self.obstacle_rs):
             # theta is already a whole number, just make it the right type
             idx = int(theta)
+            if idx < 0 or idx >= 360:
+                print("ERROR: INVALID IDX:", idx)
 
             # Assume the LIDAR can't see anything beyond 3m
             # TODO: refine this estimate (I think it's roughly correct)
@@ -190,7 +202,10 @@ class RayTracingSensorModel(SensorModel):
 
         # Calculate weight
         self.weight = np.sum(
-            np.exp(self.lidar_diff[self.lidar_diff > 0.0] ** 2) ** 3)
+            1 *
+            (np.exp(-(self.lidar_diff[self.lidar_diff >
+             0.0] ** 2) / 0.01) ** 3)
+        )
 
         return self.weight
 

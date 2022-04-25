@@ -21,7 +21,8 @@ from std_msgs.msg import Header
 from visualization_msgs.msg import Marker
 from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
 
-rng = default_rng()
+# Fix random seed to ensure deterministic behavior, to make debugging slightly more sane
+rng = default_rng(0)
 
 
 class Particle(namedtuple('Particle', ['x', 'y', 'theta', 'weight'])):
@@ -132,6 +133,8 @@ def make_marker(point: Union[Point, Iterable[Point]] = Point(0, 0, 0),
     marker.pose.orientation = orientation
     if isinstance(point, Point):
         marker.pose.position = point
+    elif isinstance(point, Pose):
+        marker.pose = point
     else:
         marker.pose.position = Point(0, 0, 0)
         marker.points = point
