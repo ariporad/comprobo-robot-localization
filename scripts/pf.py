@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-from concurrent.futures import Executor, ProcessPoolExecutor, ThreadPoolExecutor
 import math
 import rospy
 import random
@@ -14,46 +13,30 @@ from nav_msgs.msg import Odometry
 from nav_msgs.srv import GetMap
 from sensor_msgs.msg import LaserScan
 from visualization_msgs.msg import Marker, MarkerArray
-from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray
+from geometry_msgs.msg import PoseWithCovarianceStamped
 
-from sensor_model import SensorModel, RayTracingSensorModel, OccupancyFieldSensorModel
+from sensor_model import ParallelRayTracingSensorModel, SensorModel, RayTracingSensorModel
 from motion_model import MotionModel
 
 from helper_functions import TFHelper,  PoseTuple, Particle, RandomSampler, make_marker, print_time
 
 
-_motion: MotionModel = MotionModel(0.05)
-_sensor: SensorModel = RayTracingSensorModel()
-
-
-def _setup_thread(map):
-    _sensor.set_map(map)
-
-
-def _update_particle(data):
-    p, lidar, delta_pose = data
-    delta_pose = PoseTuple(*delta_pose)
-    _sensor.set_lidar(lidar)
-    p = _motion.apply(p, delta_pose)
-    # Update Weights Based on Sensor Model
-    return Particle(p.x, p.y, p.theta, _sensor.calculate_weight(p))
-
-
 class ParticleFilter:
+    USE_MULTIPROCESS_SENSOR_MODEL = True
     DEBUG_SAVE_SENSOR_STATE_PLOTS = 0
 
     NUM_PARTICLES = 200
 
-    particle_sampler_xy = RandomSampler(0.10, 0.0, (-5, 5))
-    particle_sampler_theta = RandomSampler(0.10 * math.pi, 0.00)
+    particle_sampler_xy = RandomSampler(0.10, 0)
+    particle_sampler_theta = RandomSampler(0.10 * math.pi, 0)
 
     motion_model = MotionModel(stddev=.05)
-    # sensor_model: SensorModel = OccupancyFieldSensorModel()
-    sensor_model: SensorModel = RayTracingSensorModel()
+    sensor_model: SensorModel
 
     # Don't update unless we've moved a bit
-    UPDATE_MIN_DISTANCE: float = 0  # 0.001
-    UPDATE_MIN_ROTATION: float = 0  # 0.001 * math.pi
+    # Currently set to 0 because more updates imperically seem to lead to more precision
+    UPDATE_MIN_DISTANCE: float = 0
+    UPDATE_MIN_ROTATION: float = 0
 
     last_pose: PoseTuple = None
     last_lidar: Optional[np.array] = None
@@ -73,8 +56,6 @@ class ParticleFilter:
     tf_buf: tf2_ros.Buffer
     tf_helper: TFHelper
 
-    executor: Executor
-
     def __init__(self):
         rospy.init_node('pf')
 
@@ -92,14 +73,7 @@ class ParticleFilter:
 
         rospy.wait_for_service("static_map")
         get_static_map = rospy.ServiceProxy("static_map", GetMap)
-        # self.sensor_model = OccupancyFieldSensorModel(
-        #     rospy.Publisher(
-        #         '/particle_lidar', Marker, queue_size=10)
-        # )
-        map = get_static_map().map
-        self.sensor_model.set_map(map)
-        self.executor = ProcessPoolExecutor(
-            initializer=_setup_thread, initargs=(map,))
+        self.sensor_model = ParallelRayTracingSensorModel(get_static_map().map)
 
         # IMPORTANT: Register subscribers last, so callbacks can't happen before ready
         # pose_listener responds to selection of a new approximate robot
@@ -196,11 +170,14 @@ class ParticleFilter:
                 particles = self.resample_particles(self.particles)
 
                 # Apply Motion Model
+                # NOTE: Doing this in parallel has a small performance benefit, but it's not worth the complexity
+                particles = [
+                    self.motion_model.apply(p, delta_pose)
+                    for p in particles
+                ]
 
-                particles = list(self.executor.map(
-                    _update_particle, ((p, self.last_lidar, delta_pose)
-                                       for p in particles)
-                ))
+                # Apply Sensor Model
+                particles = self.sensor_model.weight_particles(particles)
 
                 # Set Particles
                 self.set_particles(stamp, particles)
@@ -312,14 +289,11 @@ class ParticleFilter:
     def run(self):
         r = rospy.Rate(5)
 
-        try:
-            while not rospy.is_shutdown():
-                # in the main loop all we do is continuously broadcast the latest
-                # map to odom transform
-                self.tf_helper.send_last_map_to_odom_transform()
-                r.sleep()
-        finally:
-            self.executor.shutdown()
+        while not rospy.is_shutdown():
+            # in the main loop all we do is continuously broadcast the latest
+            # map to odom transform
+            self.tf_helper.send_last_map_to_odom_transform()
+            r.sleep()
 
 
 if __name__ == '__main__':

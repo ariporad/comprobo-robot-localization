@@ -1,13 +1,15 @@
+from concurrent.futures import Executor, ProcessPoolExecutor
 from contextlib import contextmanager
 import math
+from threading import Lock
 from re import L
 import rospy
 import numpy as np
 import matplotlib.pyplot as plt
-from time import perf_counter
+from time import perf_counter, sleep
 
 from pathlib import Path
-from typing import Optional, Dict
+from typing import List, Optional, Iterable
 from abc import ABC, abstractmethod
 
 from geometry_msgs.msg import Point
@@ -26,7 +28,7 @@ class SensorModel(ABC):
         self.last_lidar = np.array(ranges[0:360])
 
     @abstractmethod
-    def set_map(self, map: OccupancyGrid):
+    def weight_particles(self, particles: Iterable[Particle]) -> List[Particle]:
         pass
 
     @abstractmethod
@@ -36,151 +38,34 @@ class SensorModel(ABC):
     @abstractmethod
     def save_debug_plot(self, name: str):
         pass
-
-
-class OccupancyFieldSensorModel(SensorModel):
-    """ A sensor model based on an occupancy field. """
-
-    occupancy_field: OccupancyField
-
-    closest_obstacle: float = 0.0
-    """ Distance to closest obstacle in most recent LIDAR data. """
-
-    def __init__(self, display_pub: Optional[rospy.Publisher] = None, debug_data_dir: Path = Path(__file__).parent.parent / 'particle_sensor_data'):
-        self.debug_data_dir = debug_data_dir
-        self.debug_data_dir.mkdir(exist_ok=True)
-        self.occupancy_field = OccupancyField()
-        self.display_pub = display_pub
-
-    def set_lidar(self, ranges: list):
-        """ Notify the model of new LIDAR data. """
-        super().set_lidar(ranges)
-
-        ranges = np.array(ranges)
-        self.closest_obstacle = np.min(ranges[ranges > 0])
-
-    def calculate_weight(self, particle: Particle) -> float:
-        self.particle = particle
-        self.thetas = np.deg2rad(np.arange(0, 360)) + particle.theta
-        self.rs = self.last_lidar
-        self.xs = (self.rs * np.cos(self.thetas)) + particle.x
-        self.ys = (self.rs * np.sin(self.thetas)) + particle.y
-
-        self.weight = 0
-        self.num_valid = 0
-        self.actual_distances = np.zeros_like(self.rs)
-        self.expected_distances = np.zeros_like(self.rs)
-
-        for i in range(len(self.rs)):
-            if self.rs[i] == 0.0:  # Ignore angles where we don't have any LIDAR data
-                continue
-
-            x = self.xs[i]
-            y = self.ys[i]
-            # actual_distance = self.rs[i]  # np.sqrt((x**2) + (y**2))
-            # self.actual_distances[i] = actual_distance
-            expected_distance = self.occupancy_field.get_closest_obstacle_distance(
-                x, y)
-            if np.isnan(expected_distance):  # or expected_distance > 0.1:
-                self.weight = max(self.weight - 1, 0)
-            self.expected_distances[i] = expected_distance
-            # diff = abs(actual_distance - expected_distance)
-            self.num_valid += 1
-            self.weight += (10 *
-                            (np.exp(-(expected_distance ** 2) / 0.0005) ** 3)) ** 2
-
-        # print(self.expected_distances)
-
-        # marker = make_marker(
-        #     point=[Point(x, y, 0) for x, y in zip(self.xs, self.ys)],
-        #     shape=Marker.CUBE_LIST,
-        #     scale=(0.1, 0.1, 0.1),
-        #     frame_id='map'
-        # )
-
-        # if self.display_pub is not None:
-        #     self.display_pub.publish(marker)
-
-        # print("Distances:", distances, "weight:", weight)
-
-        # print("NUM VALID:", num_valid, "WEIGHT:", weight)
-
-        return self.weight
-
-    def set_map(self, map: OccupancyGrid):
-        # OccupancyField gets the map itself, do nothing
-        pass
-
-    def save_debug_plot(self, name: str):
-        # Not supported
-        fig, ax = plt.subplots(subplot_kw={'projection': 'polar'})
-        # https://stackoverflow.com/a/18486470
-        ax.set_theta_offset(math.pi/2.0)
-        ax.grid(True)
-        ax.arrow(0, 0, 0, 1)
-        ax.plot(np.deg2rad(np.arange(0, 360)), self.rs, 'r.')
-        ax.plot(np.deg2rad(np.arange(0, 360)), self.expected_distances, 'b,')
-        # ax.plot(np.deg2rad(np.arange(0, 360)), self.actual_distances, 'c.')
-        # ax.plot(self.obstacle_thetas_rad, self.obstacle_rs, 'b,')
-        # ax.plot(np.deg2rad(np.arange(0, 360)), self.lidar_expected, 'c,')
-        ax.set_title(
-            f"OF: ({self.particle.x:.2f}, {self.particle.y:.2f}; {self.particle.theta:.2f}; w: {self.weight:.6f})"
-        )
-        fig.savefig(self.debug_data_dir / f"{name}_{self.weight:010.6f}.png")
-        plt.close(fig)
 
 
 class RayTracingSensorModel(SensorModel):
     """ A sensor model based on pseudo-ray tracing. """
-    map_obstacles: Optional[np.array] = None
+    map_obstacles: np.array = None
     """ (n, 2)-sized matrix of x, y coordinates of occupied squares (ie. obstacles) on the map. """
 
     debug_data_dir: Path
     """ Folder to store debugging images (see save_debug_plot). Defaults to __file__/../particle_sensor_data. """
 
-    phase_timings: Dict[str, float]
+    # Data for debug plots
+    weight: float = 0.0
+    particle: Particle = Particle(0, 0, 0, 0)
+    obstacle_rs: np.array = np.array()
+    obstacle_thetas: np.array = np.array()
+    lidar_expected: np.array = np.array()
 
-    def set_map(self, map: OccupancyGrid):
-        """ Set the map. """
+    def __init__(self, map: OccupancyGrid, debug_data_dir: Path = Path(__file__).parent.parent / 'particle_sensor_data'):
         self.map_obstacles = self.preprocess_map(map)
 
-    def __init__(self, debug_data_dir: Path = Path(__file__).parent.parent / 'particle_sensor_data'):
         self.debug_data_dir = debug_data_dir
         self.debug_data_dir.mkdir(exist_ok=True)
-        self.phase_timings = {}
 
-    @contextmanager
-    def time(self, name: str = "Timer"):
-        yield
-        return
-        start = perf_counter()
-        yield
-        duration = perf_counter() - start
-
-        if name not in self.phase_timings:
-            self.phase_timings[name] = (0, 0.0)
-
-        count, dur = self.phase_timings[name]
-        self.phase_timings[name] = (count + 1), (dur + duration)
-
-    def print_timings(self, reset=True):
-        return
-        out = 'Sensor Model Timings (avg): '
-
-        total_avg_dur = 0.0
-
-        for name, data in self.phase_timings.items():
-            count, dur = data
-            avg_dur_ms = (dur / count) * 1000
-            total_avg_dur += avg_dur_ms
-            out += f"{avg_dur_ms:.4f}ms {name} / "
-
-        out += f"{total_avg_dur:.4f}ms total."
-
-        print(out)
-
-        if reset:
-            self.phase_timings = {}
+    def weight_particles(self, particles: Iterable[Particle]) -> List[Particle]:
+        return [
+            Particle(p.x, p.y, p.theta, self.calculate_weight(p))
+            for p in particles
+        ]
 
     def calculate_weight(self, particle: Particle) -> float:
         """
@@ -242,13 +127,22 @@ class RayTracingSensorModel(SensorModel):
         lidar_diff = np.abs(self.last_lidar - lidar_expected)
 
         # Calculate weight
-        return np.sum(
+        weight = np.sum(
             (
                 0.5 * (
                     np.exp(-(lidar_diff[lidar_diff > 0.0] ** 2) / 0.01)
                 )
             ) ** 3
         )
+
+        # Save data for generating debug plots
+        self.weight = weight
+        self.particle = particle
+        self.obstacle_rs = obstacle_rs
+        self.obstacle_thetas = obstacle_thetas
+        self.lidar_expected = lidar_expected
+
+        return weight
 
     def save_debug_plot(self, name: str):
         """
@@ -260,7 +154,7 @@ class RayTracingSensorModel(SensorModel):
         ax.set_theta_offset(math.pi/2.0)
         ax.grid(True)
         ax.arrow(0, 0, 0, 1)
-        # ax.plot(self.obstacle_thetas_rad, self.obstacle_rs, 'b,')
+        ax.plot(np.deg2rad(self.obstacle_thetas), self.obstacle_rs, 'b,')
         ax.plot(np.deg2rad(np.arange(0, 360)), self.lidar_expected, 'c,')
         ax.plot(np.deg2rad(np.arange(0, 360)), self.last_lidar, 'r.')
         ax.set_title(
@@ -305,3 +199,63 @@ class RayTracingSensorModel(SensorModel):
         print("Num Map Obstacles:", len(occupied), '!\n\n')
 
         return occupied
+
+
+_worker_ray_tracer: Optional[RayTracingSensorModel] = None
+# this is intentionally *not* a multiprocessing Lock, it's a threading lock
+# ie. there's one per process
+_lock: Lock = Lock()
+
+
+def _setup_worker_process(map):
+    with _lock:
+        global _worker_ray_tracer
+        # XXX: It would be much more efficient to process the map only once,
+        # but we only need to process the map at the start of the program so
+        # it's not terribly important.
+        _worker_ray_tracer = RayTracingSensorModel(map)
+
+
+def _ray_trace_particle(data):
+    with _lock:
+        if _worker_ray_tracer is None:
+            raise ValueError("Worker process hasn't been setup!")
+
+        p, lidar = data
+        _worker_ray_tracer.set_lidar(lidar)
+        return Particle(p.x, p.y, p.theta, _worker_ray_tracer.calculate_weight(p))
+
+
+class ParallelRayTracingSensorModel(SensorModel):
+    """ A sensor model based on pseudo-ray tracing. """
+
+    executor: Executor
+
+    def __init__(self, map: OccupancyGrid):
+        self.executor = ProcessPoolExecutor(
+            initializer=_setup_worker_process,
+            initargs=(map,)
+        )
+
+    def __del__(self):
+        self.executor.shutdown()
+
+    def weight_particles(self, particles: Iterable[Particle]) -> List[Particle]:
+        # XXX: It's inefficient to pass the LIDAR data through once for each particle,
+        # but there isn't a good way with the Executor API to provide contextual data.
+        return list(self.executor.map(
+            _ray_trace_particle,
+            ((p, self.last_lidar) for p in particles)
+        ))
+
+    def calculate_weight(self, particle: Particle) -> float:
+        raise NotImplementedError(
+            "Don't call calculate_weight on ParallelRayTracingSensorModel!"
+        )
+
+    _has_done_debug_plot_warning = False
+
+    def save_debug_plot(self, name: str):
+        if not self._has_done_debug_plot_warning:
+            print("WARNING: can't print debug plot in parallel ray tracing mode")
+            self._has_done_debug_plot_warning = True
