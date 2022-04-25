@@ -1,25 +1,21 @@
-from concurrent.futures import Executor, ProcessPoolExecutor
-from contextlib import contextmanager
 import math
-from threading import Lock
-from re import L
 import rospy
 import numpy as np
 import matplotlib.pyplot as plt
-from time import perf_counter, sleep
 
 from pathlib import Path
-from typing import List, Optional, Iterable
+from threading import Lock
 from abc import ABC, abstractmethod
+from typing import List, Optional, Iterable
+from concurrent.futures import Executor, ProcessPoolExecutor
 
-from geometry_msgs.msg import Point
 from nav_msgs.msg import OccupancyGrid
-from occupancy_field import OccupancyField
-from visualization_msgs.msg import Marker
-from helper_functions import Particle, normalize_angle, make_marker, print_time
+from helper_functions import Particle, normalize_angle
 
 
 class SensorModel(ABC):
+    """ Base class for sensor models. """
+
     last_lidar: Optional[np.array] = None
     """ Most recent LIDAR data. """
 
@@ -41,7 +37,18 @@ class SensorModel(ABC):
 
 
 class RayTracingSensorModel(SensorModel):
-    """ A sensor model based on pseudo-ray tracing. """
+    """
+    A sensor model based on ray tracing.
+
+    Also consider ParallelRayTracingSensorModel, which is much faster because it uses multiple cores.
+    """
+
+    MAX_DISTANCE: float = 3.0
+    """
+    Ignore any obstacles beyond this distance (instead assume the LIDAR wouldn't see anything,
+    and would return 0).
+    """
+
     map_obstacles: np.array = None
     """ (n, 2)-sized matrix of x, y coordinates of occupied squares (ie. obstacles) on the map. """
 
@@ -62,6 +69,7 @@ class RayTracingSensorModel(SensorModel):
         self.debug_data_dir.mkdir(exist_ok=True)
 
     def weight_particles(self, particles: Iterable[Particle]) -> List[Particle]:
+        """ Re-weight a set of particles using the sensor model. Does not mutate its input. """
         return [
             Particle(p.x, p.y, p.theta, self.calculate_weight(p))
             for p in particles
@@ -72,26 +80,29 @@ class RayTracingSensorModel(SensorModel):
         Use the sensor model to figure out how likely it is that the robot was at the particle given
         the most recent LIDAR data.
 
-        Think of this as a pure method, although it isn't actually: it stores all internal state as
+        Think of this as a pure method, although it isn't actually: it stores some internal state as
         instance variables on the model class. This enables you to call save_debug_plot immediately
         afterwards to get a pretty graph showing the internal state of the model.
 
-        This method is thread-safe.
+        This method is thread-safe, although save_debug_plot is unsupported with any form of
+        parallelism.
         """
-        # Take map data as cartesian coords
-        # Shift to center at particle
+        # Take map data as cartesian coords, and shift to center at particle
         # NB: Both the map and all particles are in the `map` frame
         obstacles_shifted = self.map_obstacles - \
             [particle.x, particle.y]
 
         # Convert to polar coordinates
         obstacle_rs = np.linalg.norm(obstacles_shifted, axis=1)
-        mask = obstacle_rs < 3.0
+        mask = obstacle_rs < self.MAX_DISTANCE  # ignore any obstacles too far away
         obstacle_rs = np.concatenate((
             obstacle_rs[mask],
-            # Make sure there's something far away for every angle
+            # Add some an obstacle very far away for all possible angles, so there's something at
+            # every angle.
             np.full(360, 10.0)
         ))
+
+        # Calculate the angle of each obstacle, rotating by the particle's heading
         obstacle_thetas_rad = normalize_angle(
             np.arctan2(
                 obstacles_shifted[mask][:, 1],
@@ -103,25 +114,32 @@ class RayTracingSensorModel(SensorModel):
         # This is the only place we use degrees, but it's helpful since LIDAR is indexed by degree
         obstacle_thetas = np.concatenate((
             np.rad2deg(obstacle_thetas_rad).round(),
-            # Make sure there's something far away for every angle
+            # Make sure there's something for every angle here too
             np.arange(360)
         ))
 
+        # We've normalized angels to [-180, 180], so shift to [0, 360]
         obstacle_thetas[obstacle_thetas < 0.0] += 360.0
 
-        # Take the minimum at each angle
-        # Indexed like lidar data, where each index is the degree
-        order = obstacle_thetas.argsort()
+        # Find the closest obstacle at each angle
+
+        order = obstacle_thetas.argsort()  # returns indexes in order by sorted value
+        # NOTE: obstacles_by_angle is a *normal list* of arrays, where the array at index i is the
+        # (expected) LIDAR distance values at angle i.
         splits = np.unique(obstacle_thetas[order], return_index=True)[1][1:]
         obstacles_by_angle = np.split(obstacle_rs[order], splits)
+
+        # Find the nearest obstacle at each angle
         lidar_expected = np.array([
             np.minimum.reduce(
                 a,
                 initial=10.0,
                 axis=0
-            ) for a in obstacles_by_angle
+            ) for a in obstacles_by_angle  # can't figure out how to replace this loop with numpy magic
         ])
-        lidar_expected[lidar_expected > 3.0] = 0.0
+
+        # Account for LIDAR's max range
+        lidar_expected[lidar_expected > self.MAX_DISTANCE] = 0.0
 
         # Compare to LIDAR data
         lidar_diff = np.abs(self.last_lidar - lidar_expected)
@@ -200,6 +218,10 @@ class RayTracingSensorModel(SensorModel):
 
         return occupied
 
+##
+# Helpers for multi-process raytracing.
+##
+
 
 _worker_ray_tracer: Optional[RayTracingSensorModel] = None
 # this is intentionally *not* a multiprocessing Lock, it's a threading lock
@@ -227,7 +249,13 @@ def _ray_trace_particle(data):
 
 
 class ParallelRayTracingSensorModel(SensorModel):
-    """ A sensor model based on pseudo-ray tracing. """
+    """
+    Version of RayTracingSensorModel that ray-traces in parallel, using the multiprocessing module.
+
+    Because ray tracing is embarassingly parallel, this is *much* faster.
+
+    Do not use more than one ParallelRayTracingSensorModel at once.
+    """
 
     executor: Executor
 

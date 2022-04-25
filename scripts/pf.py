@@ -34,7 +34,7 @@ class ParticleFilter:
     sensor_model: SensorModel
 
     # Don't update unless we've moved a bit
-    # Currently set to 0 because more updates imperically seem to lead to more precision
+    # Currently set to 0 because more updates imperically seems to lead to more precision
     UPDATE_MIN_DISTANCE: float = 0
     UPDATE_MIN_ROTATION: float = 0
 
@@ -162,7 +162,7 @@ class ParticleFilter:
 
         self.is_updating = True
         try:
-            with print_time('Updating'):
+            with print_time('Update'):
                 # Use a consistent LIDAR scan for the entire update
                 self.sensor_model.set_lidar(self.last_lidar)
 
@@ -222,11 +222,12 @@ class ParticleFilter:
         self.particles_stamp = stamp
 
         # NB: Particles are always in the map reference frame
-        robot_pose = np.average([  # TODO: should this be median?
+        robot_pose = np.average([
             (particle.x, particle.y, particle.theta)
             for particle in self.particles
         ], axis=0, weights=[p.weight for p in self.particles])
 
+        # TF explodes if it ever sees a NaN
         if np.isnan(robot_pose).any():
             print("WARNING: Robot pose is NaN!", robot_pose)
             return
@@ -239,7 +240,7 @@ class ParticleFilter:
         self.visualize_particles()
 
     def visualize_particles(self):
-        """ Publish particles for viewing in Rviz. """
+        """ Publish particles for viewing in RViz. """
         # Publish particles
         markers = MarkerArray()
         for i, particle in enumerate(self.normalize_weights(self.particles)):
@@ -247,8 +248,11 @@ class ParticleFilter:
                 (particle.x, particle.y, particle.theta)
             )
 
-            scale_factor = max(0 if np.isnan(particle.weight)
-                               else (particle.weight * (self.NUM_PARTICLES / 3)), 0.1)
+            # Heuristic to produce decently-sized particle arrows
+            scale_factor = max(
+                0 if np.isnan(particle.weight) else (
+                    particle.weight * (self.NUM_PARTICLES / 3)),
+                0.1)
 
             scale = (scale_factor, scale_factor * 0.1, scale_factor * 0.1)
 
@@ -262,21 +266,15 @@ class ParticleFilter:
         # Save some images of sensor model internal state
         # To enable or disable this, change DEBUG_SAVE_SENSOR_STATE_PLOTS to a number (15 is good),
         # or 0 (to disable).
-        # for particle in random.choices(self.particles, k=self.DEBUG_SAVE_SENSOR_STATE_PLOTS):
-        if self.update_count >= 0 and self.DEBUG_SAVE_SENSOR_STATE_PLOTS > 0:
-            sorted_particles = sorted(
-                self.particles, key=lambda p: p.weight, reverse=True)
-            to_draw = sorted_particles[-self.DEBUG_SAVE_SENSOR_STATE_PLOTS:] + \
-                sorted_particles[:self.DEBUG_SAVE_SENSOR_STATE_PLOTS]
-            for particle in to_draw:
-                self.sensor_model.calculate_weight(particle)
-                self.sensor_model.save_debug_plot(
-                    f"particle_{self.update_count:03d}")
+        for particle in random.choices(self.particles, k=self.DEBUG_SAVE_SENSOR_STATE_PLOTS):
+            self.sensor_model.calculate_weight(particle)
+            self.sensor_model.save_debug_plot(
+                f"particle_{self.update_count:03d}")
         self.update_count += 1
 
     def normalize_weights(self, particles: List[Particle]) -> List[Particle]:
         """
-        Normalize the weights of the particles (so the all add to 1).
+        Normalize the weights of the particles (so they all add to 1).
 
         This is a pure method (doesn't mutate anything, returns new particles).
         """
