@@ -5,7 +5,7 @@ import rospy
 import random
 
 import numpy as np
-from typing import List
+from typing import List, Optional
 
 import tf2_ros
 import tf2_geometry_msgs  # Importing for side-effects
@@ -24,10 +24,10 @@ from helper_functions import TFHelper,  PoseTuple, Particle, RandomSampler, make
 class ParticleFilter:
     DEBUG_SAVE_SENSOR_STATE_PLOTS = 0
 
-    NUM_PARTICLES = 100
+    NUM_PARTICLES = 200
 
     particle_sampler_xy = RandomSampler(0.10, 0.0, (-5, 5))
-    particle_sampler_theta = RandomSampler(0.15 * math.pi, 0.00)
+    particle_sampler_theta = RandomSampler(0.10 * math.pi, 0.00)
 
     motion_model = MotionModel(stddev=.05)
     # sensor_model: SensorModel = OccupancyFieldSensorModel()
@@ -38,6 +38,7 @@ class ParticleFilter:
     UPDATE_MIN_ROTATION: float = 0.001 * math.pi
 
     last_pose: PoseTuple = None
+    last_lidar: Optional[np.array] = None
 
     particles: List[Particle] = None
     particles_stamp: rospy.Time
@@ -99,7 +100,7 @@ class ParticleFilter:
 
     def on_lidar(self, msg: LaserScan):
         """ Callback whenever new LIDAR data is available. """
-        self.sensor_model.set_lidar(msg.ranges)
+        self.last_lidar = msg.ranges
 
     def on_odom(self, msg: Odometry):
         """ Callback whenever new odometry data is available. """
@@ -154,6 +155,10 @@ class ParticleFilter:
         if self.particles is None:
             return False
 
+        # Make sure we have some LIDAR data
+        if self.last_lidar is None:
+            return False
+
         # We don't do multiple updates in parallel
         if self.is_updating:
             return False
@@ -161,6 +166,9 @@ class ParticleFilter:
         self.is_updating = True
         try:
             with print_time('Updating'):
+                # Use a consistent LIDAR scan for the entire update
+                self.sensor_model.set_lidar(self.last_lidar)
+
                 # Resample Particles
                 particles = list(self.particles)
                 particles = self.resample_particles(self.particles)
@@ -175,7 +183,7 @@ class ParticleFilter:
                     for p in particles
                 ]
 
-                print(sorted(p.weight for p in particles))
+                # print(sorted(p.weight for p in particles))
 
                 # Set Particles
                 self.set_particles(stamp, particles)
