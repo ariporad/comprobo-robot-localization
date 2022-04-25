@@ -24,7 +24,7 @@ from helper_functions import TFHelper,  PoseTuple, Particle, RandomSampler, make
 class ParticleFilter:
     DEBUG_SAVE_SENSOR_STATE_PLOTS = 0
 
-    NUM_PARTICLES = 250
+    NUM_PARTICLES = 100
 
     particle_sampler_xy = RandomSampler(0.10, 0.0, (-5, 5))
     particle_sampler_theta = RandomSampler(0.15 * math.pi, 0.00)

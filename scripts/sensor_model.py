@@ -202,7 +202,7 @@ class RayTracingSensorModel(SensorModel):
 
         # Calculate weight
         self.weight = np.sum(
-            1 *
+            0.5 *
             (np.exp(-(self.lidar_diff[self.lidar_diff >
              0.0] ** 2) / 0.01) ** 3)
         )

@@ -26,7 +26,8 @@ class MotionModel:
                 Particle(
                     x=p.x - dx,
                     y=p.y - dy,
-                    theta=p.theta - dtheta,
+                    # XXX: I can't figure out why, but having this as + and x/y as - works better
+                    theta=p.theta + dtheta,
                     weight=p.weight
                 )
             )
