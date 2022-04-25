@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 import math
+from re import L
 import rospy
 import numpy as np
 import matplotlib.pyplot as plt
@@ -201,7 +202,11 @@ class RayTracingSensorModel(SensorModel):
         # Convert to polar coordinates
         obstacle_rs = np.linalg.norm(obstacles_shifted, axis=1)
         mask = obstacle_rs < 3.0
-        obstacle_rs = obstacle_rs[mask]
+        obstacle_rs = np.concatenate((
+            obstacle_rs[mask],
+            # Make sure there's something far away for every angle
+            np.full(360, 10.0)
+        ))
         obstacle_thetas_rad = normalize_angle(
             np.arctan2(
                 obstacles_shifted[mask][:, 1],
@@ -211,23 +216,27 @@ class RayTracingSensorModel(SensorModel):
 
         # Convert to degrees, and descretize to whole-degree increments (like LIDAR data)
         # This is the only place we use degrees, but it's helpful since LIDAR is indexed by degree
-        obstacle_thetas = np.rad2deg(obstacle_thetas_rad).round()
+        obstacle_thetas = np.concatenate((
+            np.rad2deg(obstacle_thetas_rad).round(),
+            # Make sure there's something far away for every angle
+            np.arange(360)
+        ))
 
         obstacle_thetas[obstacle_thetas < 0.0] += 360.0
 
         # Take the minimum at each angle
         # Indexed like lidar data, where each index is the degree
-        lidar_expected = np.zeros(360)
-
-        for i in range(len(lidar_expected)):
-            value = np.minimum.reduce(
-                obstacle_rs,
-                where=obstacle_thetas == i,
+        order = obstacle_thetas.argsort()
+        splits = np.unique(obstacle_thetas[order], return_index=True)[1][1:]
+        obstacles_by_angle = np.split(obstacle_rs[order], splits)
+        lidar_expected = np.array([
+            np.minimum.reduce(
+                a,
                 initial=10.0,
-            )
-            if value > 3.0:
-                value = 0.0
-            lidar_expected[i] = value
+                axis=0
+            ) for a in obstacles_by_angle
+        ])
+        lidar_expected[lidar_expected > 3.0] = 0.0
 
         # Compare to LIDAR data
         lidar_diff = np.abs(self.last_lidar - lidar_expected)
