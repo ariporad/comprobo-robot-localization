@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor, ProcessPoolExecutor, ThreadPoolExecutor
 import math
 import rospy
 import random
@@ -20,6 +20,23 @@ from sensor_model import SensorModel, RayTracingSensorModel, OccupancyFieldSenso
 from motion_model import MotionModel
 
 from helper_functions import TFHelper,  PoseTuple, Particle, RandomSampler, make_marker, print_time
+
+
+_motion: MotionModel = MotionModel(0.05)
+_sensor: SensorModel = RayTracingSensorModel()
+
+
+def _setup_thread(map):
+    _sensor.set_map(map)
+
+
+def _update_particle(data):
+    p, lidar, delta_pose = data
+    delta_pose = PoseTuple(*delta_pose)
+    _sensor.set_lidar(lidar)
+    p = _motion.apply(p, delta_pose)
+    # Update Weights Based on Sensor Model
+    return Particle(p.x, p.y, p.theta, _sensor.calculate_weight(p))
 
 
 class ParticleFilter:
@@ -56,7 +73,7 @@ class ParticleFilter:
     tf_buf: tf2_ros.Buffer
     tf_helper: TFHelper
 
-    executor: ThreadPoolExecutor
+    executor: Executor
 
     def __init__(self):
         rospy.init_node('pf')
@@ -67,8 +84,6 @@ class ParticleFilter:
         self.tf_buf = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buf)
         self.tf_helper = TFHelper()
-
-        self.executor = ThreadPoolExecutor()
 
         # publisher for the particle cloud for visualizing in rviz.
         self.particle_pub = rospy.Publisher("particlecloud",
@@ -81,7 +96,10 @@ class ParticleFilter:
         #     rospy.Publisher(
         #         '/particle_lidar', Marker, queue_size=10)
         # )
-        self.sensor_model.set_map(get_static_map().map)
+        map = get_static_map().map
+        self.sensor_model.set_map(map)
+        self.executor = ProcessPoolExecutor(
+            initializer=_setup_thread, initargs=(map,))
 
         # IMPORTANT: Register subscribers last, so callbacks can't happen before ready
         # pose_listener responds to selection of a new approximate robot
@@ -179,13 +197,10 @@ class ParticleFilter:
 
                 # Apply Motion Model
 
-                def _update_particle(p):
-                    p = self.motion_model.apply(p, delta_pose)
-                    # Update Weights Based on Sensor Model
-                    return Particle(p.x, p.y, p.theta, self.sensor_model.calculate_weight(p))
-
                 particles = list(self.executor.map(
-                    _update_particle, particles))
+                    _update_particle, ((p, self.last_lidar, delta_pose)
+                                       for p in particles)
+                ))
 
                 # Set Particles
                 self.set_particles(stamp, particles)

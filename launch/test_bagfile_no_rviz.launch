@@ -7,9 +7,10 @@
   <arg name="load_camera" default="false"/>
   <arg name="use_gpu_laser" default="true"/>
   <arg name="rate" default="1" />
+  <arg name="start" default="0" />
 
   <node name="map_server" pkg="map_server" type="map_server" args="$(find robot_localizer)/maps/$(arg map_name).yaml"/>
-  <node name="bag_player" pkg="rosbag" type="play" args="$(find robot_localizer)/bags/$(arg map_name).bag --clock --rate=$(arg rate) --start=10" output="screen"/>
+  <node name="bag_player" pkg="rosbag" type="play" args="$(find robot_localizer)/bags/$(arg map_name).bag --clock --rate=$(arg rate) --start=$(arg start)" output="screen"/>
 
   <param name="robot_description"
         command="$(find xacro)/xacro '$(find neato_description)/urdf/neato_standalone.urdf.xacro' load_camera:=$(arg load_camera) use_gpu_laser:=$(arg use_gpu_laser)"/>
