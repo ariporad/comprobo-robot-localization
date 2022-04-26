@@ -4,6 +4,7 @@
 ## Introduction
 
 ![Screen capture showing the particle filter accurately tracking the robot as it traverses a map.](imgs/full_run.gif)
+
 _A full run of the particle filter. The fact that the red LIDAR data lines up with the black map indicates that the filter is accurately identifying the robot's position._
 
 This project implements a [particle filter][wikipedia], which enables the robot to use real-time data from its LIDAR and odometry sensors, along with a pre-made map of its environment, to estimate its current position. 
@@ -27,6 +28,7 @@ The initialization phase is by far the simplest. A human estimates an initial po
 ## Re-sampling
 
 ![Screen capture of particles being resampled](imgs/resampling.gif)
+
 _Particles being re-sampled._
 
 At the start of each update cycle, the filter re-samples its particles. Conducting a proper 2D random sample with a normal distribution for each particle proved conceptually difficult to reason about (I was inclined to sample x, y, and heading individually). However, it's quite simple in practice: combining two (or more) distributions is equivalent to randomly selecting between them, then taking a random sample from the distribution you picked. In practical terms, the filter makes a random choice between particles (weighted appropriately), then takes a random sample from a normal distribution centered on that particle's x/y/heading.
@@ -34,6 +36,7 @@ At the start of each update cycle, the filter re-samples its particles. Conducti
 ## Motion Model
 
 ![Screen capture of particles being updated by the motion model, without resampling](imgs/motion%20model.gif)
+
 _Particles following the motion of the robot, but each diverging in its own direction._
 
 Each re-sampled particle is then updated to reflect the robot's motion (ie. if the robot was at the particle at the last update, where would you expect it to have driven to since then?). The motion model for this project is fairly primitive: it uses the position estimate from the robot's odometry system and adds some random error (currently, ±5%).
