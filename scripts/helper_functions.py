@@ -21,8 +21,7 @@ from std_msgs.msg import Header
 from visualization_msgs.msg import Marker
 from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
 
-# Fix random seed to ensure deterministic behavior, to make debugging slightly more sane
-rng = default_rng(0)
+rng = default_rng()
 
 
 class Particle(namedtuple('Particle', ['x', 'y', 'theta', 'weight'])):
