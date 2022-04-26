@@ -58,9 +58,9 @@ class RayTracingSensorModel(SensorModel):
     # Data for debug plots
     weight: float = 0.0
     particle: Particle = Particle(0, 0, 0, 0)
-    obstacle_rs: np.array = np.array()
-    obstacle_thetas: np.array = np.array()
-    lidar_expected: np.array = np.array()
+    obstacle_rs: np.array = np.zeros(360)
+    obstacle_thetas: np.array = np.deg2rad(np.arange(360))
+    lidar_expected: np.array = np.zeros(360)
 
     def __init__(self, map: OccupancyGrid, debug_data_dir: Path = Path(__file__).parent.parent / 'particle_sensor_data'):
         self.map_obstacles = self.preprocess_map(map)
@@ -122,7 +122,7 @@ class RayTracingSensorModel(SensorModel):
         obstacle_thetas[obstacle_thetas < 0.0] += 360.0
 
         # Find the closest obstacle at each angle
-
+        # This grouping logic is from: https://stackoverflow.com/a/43094244
         order = obstacle_thetas.argsort()  # returns indexes in order by sorted value
         # NOTE: obstacles_by_angle is a *normal list* of arrays, where the array at index i is the
         # (expected) LIDAR distance values at angle i.
@@ -172,13 +172,18 @@ class RayTracingSensorModel(SensorModel):
         ax.set_theta_offset(math.pi/2.0)
         ax.grid(True)
         ax.arrow(0, 0, 0, 1)
-        ax.plot(np.deg2rad(self.obstacle_thetas), self.obstacle_rs, 'b,')
-        ax.plot(np.deg2rad(np.arange(0, 360)), self.lidar_expected, 'c,')
-        ax.plot(np.deg2rad(np.arange(0, 360)), self.last_lidar, 'r.')
+        ax.plot(np.deg2rad(self.obstacle_thetas),
+                self.obstacle_rs, 'b.', label="Obstacles")
+        ax.plot(np.deg2rad(np.arange(0, 360)), self.lidar_expected,
+                'c.', label="LIDAR (Expected)")
+        ax.plot(np.deg2rad(np.arange(0, 360)),
+                self.last_lidar, 'r.', label="LIDAR (Actual)")
+        ax.set_rmax(3)
         ax.set_title(
-            f"({self.particle.x:.2f}, {self.particle.y:.2f}; {self.particle.theta:.2f}; w: {self.weight:.6f})"
+            f"Sensor Model (x: {self.particle.x:.2f}, y: {self.particle.y:.2f}, h: {self.particle.theta:.2f}, w: {self.weight:.6f})"
         )
-        fig.savefig(self.debug_data_dir / f"{name}_{self.weight:010.6f}.png")
+        ax.legend()
+        fig.savefig(self.debug_data_dir / f"{name}_{self.weight:.3f}.png")
         plt.close(fig)
 
     @staticmethod

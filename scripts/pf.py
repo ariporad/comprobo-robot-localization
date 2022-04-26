@@ -266,10 +266,11 @@ class ParticleFilter:
         # Save some images of sensor model internal state
         # To enable or disable this, change DEBUG_SAVE_SENSOR_STATE_PLOTS to a number (15 is good),
         # or 0 (to disable).
-        for particle in random.choices(self.particles, k=self.DEBUG_SAVE_SENSOR_STATE_PLOTS):
-            self.sensor_model.calculate_weight(particle)
-            self.sensor_model.save_debug_plot(
-                f"particle_{self.update_count:03d}")
+        if not isinstance(self.sensor_model, ParallelRayTracingSensorModel):
+            for particle in random.choices(self.particles, k=self.DEBUG_SAVE_SENSOR_STATE_PLOTS):
+                self.sensor_model.calculate_weight(particle)
+                self.sensor_model.save_debug_plot(
+                    f"particle_{self.update_count:03d}")
         self.update_count += 1
 
     def normalize_weights(self, particles: List[Particle]) -> List[Particle]:
